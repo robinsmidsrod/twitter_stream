@@ -3,6 +3,9 @@
 use strict;
 use warnings;
 
+use File::HomeDir;
+use Path::Class;
+use Config::Any;
 use AnyEvent;
 use AnyEvent::Twitter::Stream;
 
@@ -10,20 +13,31 @@ use AnyEvent::Twitter::Stream;
 binmode STDOUT, ":utf8";
 
 my $done = AnyEvent->condvar;
-my $stream = init_stream($done);
+my $stream = init_stream($done, @ARGV);
 $done->recv();
 exit;
 
 ############################################
 
 sub init_stream {
-    my ($done) = @_;
+    my ($done, $username, $password) = @_;
+
+    my $config_file = get_config_file();
+    my $config = get_config($config_file);
+    $username ||= $config->{'global'}->{'username'};
+    $password ||= $config->{'global'}->{'password'};
+
+    unless ( $username and $password ) {
+        die("Please specify your Twitter username and password on command line or in '$config_file'.\n");
+    }
+
     return AnyEvent::Twitter::Stream->new(
-        username => $ENV{TWITTER_USERNAME},
-        password => $ENV{TWITTER_PASSWORD},
+        username => $username,
+        password => $password,
         method => 'sample',
         on_tweet => sub {
-            handle_tweet(@_);
+            my ($tweet) = @_;
+            handle_tweet($tweet);
         },
         on_keepalive => sub {
             warn "-- keepalive --\n";
@@ -38,6 +52,26 @@ sub init_stream {
         },
         timeout => 45,
     );
+}
+
+sub get_config_file {
+    my $home = File::HomeDir->my_data;
+    my $conf_file = Path::Class::Dir->new($home)->file('.twitter_stream.ini');
+    return $conf_file;
+}
+
+sub get_config {
+    my ($conf_file) = @_;
+    my $cfg = Config::Any->load_files({
+        use_ext => 1,
+        files   => [ $conf_file ],
+    });
+    foreach my $config_entry ( @{ $cfg } ) {
+        my ($filename, $config) = %{ $config_entry };
+        warn("Loaded config from file: $filename\n");
+        return $config;
+    }
+    return {};
 }
 
 sub handle_tweet {
