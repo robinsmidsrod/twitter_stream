@@ -78,6 +78,7 @@ sub handle_tweet {
     my ($tweet) = @_;
     return unless $tweet->{'user'}->{'screen_name'};
     return unless $tweet->{'text'};
+    return unless $tweet->{'text'} =~ m{http}i;
     print $tweet->{'user'}->{'screen_name'}, ": ", $tweet->{'text'}, "\n";
     #print join("\n", keys %{ $tweet } ), "\n";
     #print join(", ", keys %{ $tweet->{'user'} } ), "\n";
