@@ -8,6 +8,7 @@ use Path::Class;
 use Config::Any;
 use AnyEvent;
 use AnyEvent::Twitter::Stream;
+use URI::Find::UTF8;
 
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
@@ -79,7 +80,16 @@ sub handle_tweet {
     return unless $tweet->{'user'}->{'screen_name'};
     return unless $tweet->{'text'};
     return unless $tweet->{'text'} =~ m{http}i;
-    print $tweet->{'user'}->{'screen_name'}, ": ", $tweet->{'text'}, "\n";
+#    print $tweet->{'user'}->{'screen_name'}, ": ", $tweet->{'text'}, "\n";
+    my $finder = URI::Find::UTF8->new(sub {
+        my ($uri, $uri_str) = @_;
+        print $uri, "\n";
+    });
+    $finder->find(\( $tweet->{'text'} ));
+    foreach my $hashtag ( sort $tweet->{'text'} =~ m{#(\w+?)\b}g ) {
+        next if $hashtag =~ m{^\d+$}; # Skip digits only
+        print "    #", $hashtag, "\n";
+    }
     #print join("\n", keys %{ $tweet } ), "\n";
     #print join(", ", keys %{ $tweet->{'user'} } ), "\n";
 }
