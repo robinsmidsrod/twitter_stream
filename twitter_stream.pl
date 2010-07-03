@@ -9,6 +9,8 @@ use Config::Any;
 use AnyEvent;
 use AnyEvent::Twitter::Stream;
 use URI::Find::UTF8;
+use LWP::UserAgent ();
+use Encode ();
 
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
@@ -32,13 +34,15 @@ sub init_stream {
         die("Please specify your Twitter username and password on command line or in '$config_file'.\n");
     }
 
+    my $ua = LWP::UserAgent->new();
+
     return AnyEvent::Twitter::Stream->new(
         username => $username,
         password => $password,
         method => 'sample',
         on_tweet => sub {
             my ($tweet) = @_;
-            handle_tweet($tweet);
+            handle_tweet($tweet,$ua);
         },
         on_keepalive => sub {
             warn "-- keepalive --\n";
@@ -76,7 +80,7 @@ sub get_config {
 }
 
 sub handle_tweet {
-    my ($tweet) = @_;
+    my ($tweet,$ua) = @_;
     return unless $tweet->{'user'}->{'screen_name'};
     return unless $tweet->{'text'};
     return unless $tweet->{'text'} =~ m{http}i;
@@ -89,6 +93,13 @@ sub handle_tweet {
     $finder->find(\( $tweet->{'text'} ));
     foreach my $url ( sort @urls ) {
         print $url, "\n";
+        my ($redirect, $title) = resolve_redirect($url,$ua);
+        if ( $redirect and $redirect ne $url ) {
+            print " => ", $redirect, "\n";
+        }
+        if ( $title ) {
+            print "   => ", $title, "\n";
+        }
     }
     return unless @urls > 0; # No URLs, don't print hashtags
     foreach my $hashtag ( sort $tweet->{'text'} =~ m{#(\w+?)\b}g ) {
@@ -98,6 +109,47 @@ sub handle_tweet {
     print "\n";
     #print join("\n", keys %{ $tweet } ), "\n";
     #print join(", ", keys %{ $tweet->{'user'} } ), "\n";
+}
+
+sub resolve_redirect {
+    my ($url,$ua) = @_;
+    my $content;
+    my $res;
+    eval {
+        local $SIG{ALRM} = sub { die "alarm\n" }; # NB: \n required
+        alarm 2;
+        $res = $ua->get(
+            $url,
+            ":content_cb" => sub {
+                my ($data, $res, $ua) = @_;
+                $content = $data;
+                die("Aborted\n"); # Just read first 1k
+            },
+            ":read_size_hint" => 1000,
+        );
+        alarm 0;
+    };
+    if ( $@ ) {
+        die unless $@ eq "alarm\n";
+        return; # timeout
+    }
+    if ( $res->is_success ) {
+        my $title = $content;
+        if ( $res->content_charset ) {
+            {
+                no warnings 'utf8';
+                $title = Encode::decode($res->content_charset, $title);
+            }
+        }
+        if ( $title =~ s{\A.*<title>(.+?)</title>.*\Z}{$1}xms ) {
+            $title =~ s/\s+/ /gms; # trim consecutive whitespace
+            return ( $res->request->uri, $title );
+        }
+        else {
+            return $res->request->uri;
+        }
+    }
+    return;
 }
 
 1;
