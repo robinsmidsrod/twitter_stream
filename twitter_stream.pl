@@ -13,6 +13,7 @@ use LWP::UserAgent ();
 use Encode ();
 use Data::Dumper qw(Dumper);
 use HTML::Encoding ();
+use HTML::Entities ();
 
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
@@ -87,7 +88,7 @@ sub handle_tweet {
     return unless $tweet->{'text'};
     return unless $tweet->{'text'} =~ m{http}i;
     #print $tweet->{'user'}->{'screen_name'}, ": ", $tweet->{'text'}, "\n";
-    print $tweet->{'id'}, ":\n";
+    print "ID:            ", $tweet->{'id'}, "\n";
     my @urls;
     my $finder = URI::Find::UTF8->new(sub {
         my ($uri, $uri_str) = @_;
@@ -95,19 +96,25 @@ sub handle_tweet {
     });
     $finder->find(\( $tweet->{'text'} ));
     foreach my $url ( sort @urls ) {
-        print $url, "\n";
-        my ($redirect, $title) = resolve_redirect($url,$ua);
+        print "URL:           ", $url, "\n";
+        my ($redirect, $title, $encoding_from, $mimetype) = resolve_redirect($url,$ua);
         if ( $redirect and $redirect ne $url ) {
-            print " => ", $redirect, "\n";
+            print "RESOLVED URL:  ", $redirect, "\n";
         }
         if ( $title ) {
-            print "   => ", $title, "\n";
+            print "TITLE:         ", $title, "\n";
+        }
+        if ( $encoding_from ) {
+            print "ENCODING FROM: ", $encoding_from, "\n";
+        }
+        if ( $mimetype ) {
+            print "CONTENT TYPE:  ", $mimetype, "\n";
         }
     }
     return unless @urls > 0; # No URLs, don't print hashtags
     foreach my $hashtag ( sort $tweet->{'text'} =~ m{#(\w+?)\b}g ) {
         next if $hashtag =~ m{^\d+$}; # Skip digits only
-        print "    #", $hashtag, "\n";
+        print "KEYWORD:       ", $hashtag, "\n";
     }
 #    print "Location: ", $tweet->{'user'}->{'location'}, "\n";
 #    print join("\n", keys %{ $tweet } ), "\n";
@@ -146,34 +153,36 @@ sub resolve_redirect {
         return; # timeout
     }
     if ( $res->is_success ) {
+        my $content_type = $res->header('Content-Type');
+        $content_type = (split(/;/, $content_type, 2))[0];
         my $title = $content;
         my $encoding_from = "";
         if ( $res->content_charset and Encode::resolve_alias($res->content_charset) ) {
-            $encoding_from = "HEADER";
+            $encoding_from = "header";
             {
                 no warnings 'utf8';
                 $title = Encode::decode($res->content_charset, $title);
             }
         }
         else {
-            my $encoding = HTML::Encoding::encoding_from_html_document($title);
+            my $encoding = $content_type eq 'text/html'
+                         ? HTML::Encoding::encoding_from_html_document($title)
+                         : HTML::Encoding::encoding_from_xml_declaration($title);
             if ( $encoding and Encode::resolve_alias($encoding) ) {
-                $encoding_from = "META";
+                $encoding_from = "content";
                 {
                     no warnings 'utf8';
                     $title = Encode::decode($encoding, $title);
                 }
             }
         }
-        if ( $title =~ s{\A.*<title>(.+?)</title>.*\Z}{$1}xmsi ) {
+        if ( $title =~ s{\A.*<title>\s*(.+?)\s*</title>.*\Z}{$1}xmsi ) {
             $title =~ s/\s+/ /gms; # trim consecutive whitespace
-            return ( $res->request->uri, $encoding_from . ": " . $title );
+            $title = HTML::Entities::decode($title); # Get rid of those pesky HTML entities
+            return ( $res->request->uri, $title, $encoding_from, $content_type );
         }
         else {
-#            print $content;
-            my $content_type = $res->header('Content-Type');
-            $content_type = (split(/;/, $content_type, 2))[0];
-            return ( $res->request->uri, "type: " . $content_type );
+            return ( $res->request->uri, undef, undef, $content_type );
         }
     }
     return;
