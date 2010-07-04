@@ -11,6 +11,8 @@ use AnyEvent::Twitter::Stream;
 use URI::Find::UTF8;
 use LWP::UserAgent ();
 use Encode ();
+use Data::Dumper qw(Dumper);
+use HTML::Encoding ();
 
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
@@ -85,6 +87,7 @@ sub handle_tweet {
     return unless $tweet->{'text'};
     return unless $tweet->{'text'} =~ m{http}i;
     #print $tweet->{'user'}->{'screen_name'}, ": ", $tweet->{'text'}, "\n";
+    print $tweet->{'id'}, ":\n";
     my @urls;
     my $finder = URI::Find::UTF8->new(sub {
         my ($uri, $uri_str) = @_;
@@ -106,24 +109,33 @@ sub handle_tweet {
         next if $hashtag =~ m{^\d+$}; # Skip digits only
         print "    #", $hashtag, "\n";
     }
-    print "\n";
-    #print join("\n", keys %{ $tweet } ), "\n";
-    #print join(", ", keys %{ $tweet->{'user'} } ), "\n";
+#    print "Location: ", $tweet->{'user'}->{'location'}, "\n";
+#    print join("\n", keys %{ $tweet } ), "\n";
+#    print Dumper($tweet);
+#    print "GEO: ", $tweet->{'geo'}, "\n";
+#    print "COORDINATES: ", $tweet->{'coordinates'}, "\n";
+#    print "PLACE: ", $tweet->{'place'}, "\n";
+    #print join(", ", keys %{ $tweet->{'coordinates'} } ), "\n";
+    print "-" x 79, "\n";
 }
 
 sub resolve_redirect {
     my ($url,$ua) = @_;
-    my $content;
+    my $content = "";
     my $res;
     eval {
         local $SIG{ALRM} = sub { die "alarm\n" }; # NB: \n required
-        alarm 2;
+        alarm 3;
+        my $chunks_read = 0;
         $res = $ua->get(
             $url,
             ":content_cb" => sub {
                 my ($data, $res, $ua) = @_;
-                $content = $data;
-                die("Aborted\n"); # Just read first 1k
+                die("Not HTML!\n") if $res->header('Content-type') !~ m{^(?:text/html|application/xhtml+xml)};
+                $content .= $data;
+                $chunks_read++;
+                die("Title found!\n") if $content =~ m{</title>}xmsi;
+                die("Too much data read!\n") if $chunks_read >= 5; # Read at maximum 5k
             },
             ":read_size_hint" => 1000,
         );
@@ -135,18 +147,33 @@ sub resolve_redirect {
     }
     if ( $res->is_success ) {
         my $title = $content;
-        if ( $res->content_charset ) {
+        my $encoding_from = "";
+        if ( $res->content_charset and Encode::resolve_alias($res->content_charset) ) {
+            $encoding_from = "HEADER";
             {
                 no warnings 'utf8';
                 $title = Encode::decode($res->content_charset, $title);
             }
         }
-        if ( $title =~ s{\A.*<title>(.+?)</title>.*\Z}{$1}xms ) {
+        else {
+            my $encoding = HTML::Encoding::encoding_from_html_document($title);
+            if ( $encoding and Encode::resolve_alias($encoding) ) {
+                $encoding_from = "META";
+                {
+                    no warnings 'utf8';
+                    $title = Encode::decode($encoding, $title);
+                }
+            }
+        }
+        if ( $title =~ s{\A.*<title>(.+?)</title>.*\Z}{$1}xmsi ) {
             $title =~ s/\s+/ /gms; # trim consecutive whitespace
-            return ( $res->request->uri, $title );
+            return ( $res->request->uri, $encoding_from . ": " . $title );
         }
         else {
-            return $res->request->uri;
+#            print $content;
+            my $content_type = $res->header('Content-Type');
+            $content_type = (split(/;/, $content_type, 2))[0];
+            return ( $res->request->uri, "type: " . $content_type );
         }
     }
     return;
