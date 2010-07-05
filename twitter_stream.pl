@@ -14,6 +14,7 @@ use Encode ();
 use Data::Dumper qw(Dumper);
 use HTML::Encoding ();
 use HTML::Entities ();
+use HTTP::Date ();
 
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
@@ -87,43 +88,57 @@ sub handle_tweet {
     return unless $tweet->{'user'}->{'screen_name'};
     return unless $tweet->{'text'};
     return unless $tweet->{'text'} =~ m{http}i;
-    #print $tweet->{'user'}->{'screen_name'}, ": ", $tweet->{'text'}, "\n";
-    print "ID:            ", $tweet->{'id'}, "\n";
+    my %keywords;
+    foreach my $hashtag ( sort $tweet->{'text'} =~ m{#(\w+?)\b}g ) {
+        next if $hashtag =~ m{^\d+$}; # Skip digits only
+        $keywords{$hashtag} = 1;
+    }
     my @urls;
     my $finder = URI::Find::UTF8->new(sub {
         my ($uri, $uri_str) = @_;
         push @urls, $uri;
     });
     $finder->find(\( $tweet->{'text'} ));
+
+    my $timestamp = parse_date( $tweet->{'created_at'} );
+
     foreach my $url ( sort @urls ) {
-        print "URL:           ", $url, "\n";
-        my ($redirect, $title, $encoding_from, $mimetype) = resolve_redirect($url,$ua);
-        if ( $redirect and $redirect ne $url ) {
-            print "RESOLVED URL:  ", $redirect, "\n";
+        my ($status_code, $redirect, $title, $encoding_from, $mimetype);
+        if ( 0 ) {
+            ($status_code, $redirect, $title, $encoding_from, $mimetype) = resolve_redirect($url,$ua);
         }
-        if ( $title ) {
-            print "TITLE:         ", $title, "\n";
-        }
-        if ( $encoding_from ) {
-            print "ENCODING FROM: ", $encoding_from, "\n";
-        }
-        if ( $mimetype ) {
-            print "CONTENT TYPE:  ", $mimetype, "\n";
+        foreach my $keyword ( sort keys %keywords ) {
+            print "ID:            ", $tweet->{'id'}, "\n";
+            print "TIMESTAMP:     ", $timestamp, "\n";
+            print "NAME:          ", $tweet->{'user'}->{'name'}, "\n";
+            print "KEYWORD:       ", $keyword, "\n";
+            print "URL:           ", $url, "\n";
+            if ( $status_code ) {
+                print "HTTP STATUS:   ", $status_code, "\n";
+            }
+            if ( $redirect and $redirect ne $url ) {
+                print "RESOLVED URL:  ", $redirect, "\n";
+            }
+            if ( $title ) {
+                print "TITLE:         ", $title, "\n";
+            }
+            if ( $encoding_from ) {
+                print "ENCODING FROM: ", $encoding_from, "\n";
+            }
+            if ( $mimetype ) {
+                print "CONTENT TYPE:  ", $mimetype, "\n";
+            }
+            print "-" x 79, "\n";
         }
     }
     return unless @urls > 0; # No URLs, don't print hashtags
-    foreach my $hashtag ( sort $tweet->{'text'} =~ m{#(\w+?)\b}g ) {
-        next if $hashtag =~ m{^\d+$}; # Skip digits only
-        print "KEYWORD:       ", $hashtag, "\n";
-    }
 #    print "Location: ", $tweet->{'user'}->{'location'}, "\n";
 #    print join("\n", keys %{ $tweet } ), "\n";
 #    print Dumper($tweet);
 #    print "GEO: ", $tweet->{'geo'}, "\n";
 #    print "COORDINATES: ", $tweet->{'coordinates'}, "\n";
 #    print "PLACE: ", $tweet->{'place'}, "\n";
-    #print join(", ", keys %{ $tweet->{'coordinates'} } ), "\n";
-    print "-" x 79, "\n";
+#    print join(", ", keys %{ $tweet->{'coordinates'} } ), "\n";
 }
 
 sub resolve_redirect {
@@ -150,7 +165,7 @@ sub resolve_redirect {
     };
     if ( $@ ) {
         die unless $@ eq "alarm\n";
-        return; # timeout
+        return ( $res->code, $res->request->uri, undef, undef, $res->header('Content-type') ); # timeout
     }
     if ( $res->is_success ) {
         my $content_type = $res->header('Content-Type');
@@ -179,13 +194,39 @@ sub resolve_redirect {
         if ( $title =~ s{\A.*<title>\s*(.+?)\s*</title>.*\Z}{$1}xmsi ) {
             $title =~ s/\s+/ /gms; # trim consecutive whitespace
             $title = HTML::Entities::decode($title); # Get rid of those pesky HTML entities
-            return ( $res->request->uri, $title, $encoding_from, $content_type );
+            return ( $res->code, $res->request->uri, $title, $encoding_from, $content_type );
         }
         else {
-            return ( $res->request->uri, undef, undef, $content_type );
+            return ( $res->code, $res->request->uri, undef, undef, $content_type );
         }
     }
     return;
+}
+
+sub parse_date {
+    my ($str) = @_;
+    ( my $year = $str ) =~ s/\A.+(\d{4})\Z/$1/xms;
+    ( my $month = $str ) =~ s/\A.+?\s+(\w+?)\s.*\Z/$1/xms;
+    my %months = (
+        Jan => "01",
+        Feb => "02",
+        Mar => "03",
+        Apr => "04",
+        May => "05",
+        Jun => "06",
+        Jul => "07",
+        Aug => "08",
+        Sep => "09",
+        Oct => "10",
+        Nov => "11",
+        Dec => "12",
+    );
+    $month = $months{$month};
+    ( my $day = $str ) =~ s/\A\w+?\s+?\w+?\s+?(\d{2}).*\Z/$1/xms;
+    ( my $hour = $str ) =~ s/\A\w+?\s+?\w+?\s+?\d+?\s+?(\d{2}).*\Z/$1/xms;
+    ( my $minute = $str ) =~ s/\A\w+?\s+?\w+?\s+?\d+?\s+?\d+?:(\d{2}).*\Z/$1/xms;
+    ( my $second = $str ) =~ s/\A\w+?\s+?\w+?\s+?\d+?\s+?\d+?:\d+?:(\d{2}).*\Z/$1/xms;
+    return "$year-$month-$day $hour:$minute:$second UTC";
 }
 
 1;
