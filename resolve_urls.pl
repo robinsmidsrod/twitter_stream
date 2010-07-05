@@ -28,17 +28,18 @@ SELECT url FROM twitter
 WHERE url NOT IN ( SELECT url FROM url)
 GROUP BY url
 ORDER BY COUNT(*) DESC
-LIMIT 1
+LIMIT ?
 EOM
     my $insert_sth = $dbh->prepare(<<'EOM');
 INSERT INTO url (url,fetched_at,response_code,real_url,title,content_type)
 VALUES (?,current_timestamp, ?, ?, ?, ?)
 EOM
     while( 1 ) {
-        $fetch_sth->execute();
+        $fetch_sth->execute(1);
         (my $url) = $fetch_sth->fetchrow_array();
         if ( $url ) {
-            handle_url( $url, $ua, $dbh, $insert_sth );
+            my $info = resolve_redirect( $url, $ua );
+            handle_url( $info, $dbh, $insert_sth );
         }
         else {
             print "Sleeping...\n";
@@ -50,33 +51,31 @@ EOM
 }
 
 sub handle_url {
-    my ($url, $ua, $dbh, $sth) = @_;
+    my ($info, $dbh, $sth) = @_;
 
-    print "URL:           ", $url, "\n";
+    print "URL:           ", $info->{'url'}, "\n";
 
-    my ($status_code, $redirect, $title, $encoding_from, $mimetype) = resolve_redirect($url,$ua);
-
-    if ( $status_code ) {
-        print "HTTP STATUS:   ", $status_code, "\n";
+    if ( $info->{'code'} ) {
+        print "HTTP STATUS:   ", $info->{'code'}, "\n";
     }
-    if ( $redirect ) {
-        print "RESOLVED URL:  ", $redirect, "\n";
+    if ( $info->{'real_url'} ) {
+        print "RESOLVED URL:  ", $info->{'real_url'}, "\n";
     }
-    if ( $title ) {
-        print "TITLE:         ", $title, "\n";
+    if ( $info->{'title'} ) {
+        print "TITLE:         ", $info->{'title'}, "\n";
     }
-    if ( $encoding_from ) {
-        print "ENCODING FROM: ", $encoding_from, "\n";
+    if ( $info->{'encoding_from'} ) {
+        print "ENCODING FROM: ", $info->{'encoding_from'}, "\n";
     }
-    if ( $mimetype ) {
-        print "CONTENT TYPE:  ", $mimetype, "\n";
+    if ( $info->{'content_type'} ) {
+        print "CONTENT TYPE:  ", $info->{'content_type'}, "\n";
     }
     $sth->execute(
-        $url,
-        $status_code,
-        $redirect,
-        $title,
-        $mimetype
+        $info->{'url'},
+        ( $info->{'code'} || undef ),
+        ( $info->{'real_url'} || undef ),
+        ( $info->{'title'} || undef ),
+        ( $info->{'content_type'} || undef),
     );
     if ( $dbh->err ) {
         print "Rollback because '" . $dbh->errstr . "'!\n";
@@ -112,8 +111,8 @@ sub resolve_redirect {
         alarm 0;
     };
     if ( $@ ) {
-        die unless $@ eq "alarm\n";
-        return ( $res->code, $res->request->uri, undef, undef, $res->header('Content-type') ); # timeout
+        print "Timeout!\n";
+        return { url => $url }; # timeout
     }
     if ( $res->is_success ) {
         my $content_type = $res->header('Content-Type');
@@ -142,13 +141,29 @@ sub resolve_redirect {
         if ( $title =~ s{\A.*<title>\s*(.+?)\s*</title>.*\Z}{$1}xmsi ) {
             $title =~ s/\s+/ /gms; # trim consecutive whitespace
             $title = HTML::Entities::decode($title); # Get rid of those pesky HTML entities
-            return ( $res->code, $res->request->uri, $title, $encoding_from, $content_type );
+            return {
+                url           => $url,
+                code          => $res->code,
+                real_url      => $res->request->uri,
+                title         => ( $title || undef ),
+                encoding_from => $encoding_from,
+                content_type  => $content_type,
+            };
         }
         else {
-            return ( $res->code, $res->request->uri, undef, undef, $content_type );
+            return {
+                url          => $url,
+                code         => $res->code,
+                real_url     => $res->request->uri,
+                content_type => $content_type,
+            };
         }
     }
-    return;
+    # Fetch failed, return what we got
+    return {
+        url => $url,
+        code => $res->code,
+    };
 }
 
 1;
