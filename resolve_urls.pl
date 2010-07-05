@@ -12,16 +12,18 @@ use DBI ();
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
 
-run();
+run($ARGV[0] || 1); # Set concurrency
 
 exit;
 
 ############################################
 
 sub run {
+    my ($concurrency) = @_;
     my $ua = LWP::UserAgent->new();
     my $dbh = DBI->connect('dbi:Pg:dbname=twitter_stream', "", "", { AutoCommit => 0 } );
     die("Can't connect to database") unless $dbh;
+    $dbh->{'pg_enable_utf8'} = 1; # Return data from DB already decoded
 
     my $fetch_sth = $dbh->prepare(<<'EOM');
 SELECT url FROM twitter
@@ -35,7 +37,7 @@ INSERT INTO url (url,fetched_at,response_code,real_url,title,content_type)
 VALUES (?,current_timestamp, ?, ?, ?, ?)
 EOM
     while( 1 ) {
-        $fetch_sth->execute(1);
+        $fetch_sth->execute($concurrency);
         (my $url) = $fetch_sth->fetchrow_array();
         if ( $url ) {
             my $info = resolve_redirect( $url, $ua );
@@ -74,8 +76,8 @@ sub handle_url {
         $info->{'url'},
         ( $info->{'code'} || undef ),
         ( $info->{'real_url'} || undef ),
-        ( $info->{'title'} || undef ),
-        ( $info->{'content_type'} || undef),
+        ( $info->{'title'} ? Encode::encode_utf8( $info->{'title'} ) : undef ),
+        ( $info->{'content_type'} ? substr( $info->{'content_type'}, 0, 50 ) : undef ),
     );
     if ( $dbh->err ) {
         print "Rollback because '" . $dbh->errstr . "'!\n";
