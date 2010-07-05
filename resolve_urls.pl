@@ -21,6 +21,9 @@ exit;
 sub run {
     my ($concurrency) = @_;
     my $ua = LWP::UserAgent->new();
+    # Let's lie about who we are, because sites like Facebook won't give us anything useful unless we do
+    $ua->agent("Mozilla/5.0 (Windows; U; Windows NT 6.1; en-US; rv:1.9.2.6) Gecko/20100625 Firefox/3.6.6");
+
     my $dbh = DBI->connect('dbi:Pg:dbname=twitter_stream', "", "", { AutoCommit => 0 } );
     die("Can't connect to database") unless $dbh;
     $dbh->{'pg_enable_utf8'} = 1; # Return data from DB already decoded
