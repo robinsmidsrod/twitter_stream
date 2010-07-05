@@ -9,12 +9,7 @@ use Config::Any;
 use AnyEvent;
 use AnyEvent::Twitter::Stream;
 use URI::Find::UTF8;
-use LWP::UserAgent ();
-use Encode ();
-use Data::Dumper qw(Dumper);
-use HTML::Encoding ();
-use HTML::Entities ();
-use HTTP::Date ();
+use DBI ();
 
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
@@ -38,7 +33,10 @@ sub init_stream {
         die("Please specify your Twitter username and password on command line or in '$config_file'.\n");
     }
 
-    my $ua = LWP::UserAgent->new();
+    my $dbh = DBI->connect('dbi:Pg:dbname=twitter_stream', "", "", { AutoCommit => 0 } );
+    die("Can't connect to database") unless $dbh;
+
+    my $insert_sth = $dbh->prepare("INSERT INTO twitter (twitter_id,created_at,created_by,keyword,url) VALUES (?,?,?,?,?)");
 
     return AnyEvent::Twitter::Stream->new(
         username => $username,
@@ -46,7 +44,7 @@ sub init_stream {
         method => 'sample',
         on_tweet => sub {
             my ($tweet) = @_;
-            handle_tweet($tweet,$ua);
+            handle_tweet($tweet, $dbh, $insert_sth);
         },
         on_keepalive => sub {
             warn "-- keepalive --\n";
@@ -84,7 +82,7 @@ sub get_config {
 }
 
 sub handle_tweet {
-    my ($tweet,$ua) = @_;
+    my ($tweet, $dbh, $sth) = @_;
     return unless $tweet->{'user'}->{'screen_name'};
     return unless $tweet->{'text'};
     return unless $tweet->{'text'} =~ m{http}i;
@@ -96,6 +94,9 @@ sub handle_tweet {
     my @urls;
     my $finder = URI::Find::UTF8->new(sub {
         my ($uri, $uri_str) = @_;
+        return unless $uri->scheme =~ m{^(?:ftp|http|https)$}; # We just care about HTTP(S) and FTP
+        return unless $uri->host; # Skip URLs without hostname part
+        return unless $uri->host =~ m{\.\w{2,}$}; # Need at least one dot + two (or more) word chars at the end of the hostname
         push @urls, $uri;
     });
     $finder->find(\( $tweet->{'text'} ));
@@ -103,104 +104,28 @@ sub handle_tweet {
     my $timestamp = parse_date( $tweet->{'created_at'} );
 
     foreach my $url ( sort @urls ) {
-        my ($status_code, $redirect, $title, $encoding_from, $mimetype);
-        if ( 0 ) {
-            ($status_code, $redirect, $title, $encoding_from, $mimetype) = resolve_redirect($url,$ua);
-        }
         foreach my $keyword ( sort keys %keywords ) {
             print "ID:            ", $tweet->{'id'}, "\n";
             print "TIMESTAMP:     ", $timestamp, "\n";
             print "NAME:          ", $tweet->{'user'}->{'name'}, "\n";
             print "KEYWORD:       ", $keyword, "\n";
             print "URL:           ", $url, "\n";
-            if ( $status_code ) {
-                print "HTTP STATUS:   ", $status_code, "\n";
+            $sth->execute(
+                $tweet->{'id'},
+                $timestamp,
+                $tweet->{'user'}->{'name'},
+                $keyword,
+                $url
+            );
+            if ( $dbh->err ) {
+                $dbh->rollback();
             }
-            if ( $redirect and $redirect ne $url ) {
-                print "RESOLVED URL:  ", $redirect, "\n";
-            }
-            if ( $title ) {
-                print "TITLE:         ", $title, "\n";
-            }
-            if ( $encoding_from ) {
-                print "ENCODING FROM: ", $encoding_from, "\n";
-            }
-            if ( $mimetype ) {
-                print "CONTENT TYPE:  ", $mimetype, "\n";
+            else {
+                $dbh->commit();
             }
             print "-" x 79, "\n";
         }
     }
-    return unless @urls > 0; # No URLs, don't print hashtags
-#    print "Location: ", $tweet->{'user'}->{'location'}, "\n";
-#    print join("\n", keys %{ $tweet } ), "\n";
-#    print Dumper($tweet);
-#    print "GEO: ", $tweet->{'geo'}, "\n";
-#    print "COORDINATES: ", $tweet->{'coordinates'}, "\n";
-#    print "PLACE: ", $tweet->{'place'}, "\n";
-#    print join(", ", keys %{ $tweet->{'coordinates'} } ), "\n";
-}
-
-sub resolve_redirect {
-    my ($url,$ua) = @_;
-    my $content = "";
-    my $res;
-    eval {
-        local $SIG{ALRM} = sub { die "alarm\n" }; # NB: \n required
-        alarm 3;
-        my $chunks_read = 0;
-        $res = $ua->get(
-            $url,
-            ":content_cb" => sub {
-                my ($data, $res, $ua) = @_;
-                die("Not HTML!\n") if $res->header('Content-type') !~ m{^(?:text/html|application/xhtml+xml)};
-                $content .= $data;
-                $chunks_read++;
-                die("Title found!\n") if $content =~ m{</title>}xmsi;
-                die("Too much data read!\n") if $chunks_read >= 5; # Read at maximum 5k
-            },
-            ":read_size_hint" => 1000,
-        );
-        alarm 0;
-    };
-    if ( $@ ) {
-        die unless $@ eq "alarm\n";
-        return ( $res->code, $res->request->uri, undef, undef, $res->header('Content-type') ); # timeout
-    }
-    if ( $res->is_success ) {
-        my $content_type = $res->header('Content-Type');
-        $content_type = (split(/;/, $content_type, 2))[0];
-        my $title = $content;
-        my $encoding_from = "";
-        if ( $res->content_charset and Encode::resolve_alias($res->content_charset) ) {
-            $encoding_from = "header";
-            {
-                no warnings 'utf8';
-                $title = Encode::decode($res->content_charset, $title);
-            }
-        }
-        else {
-            my $encoding = $content_type eq 'text/html'
-                         ? HTML::Encoding::encoding_from_html_document($title)
-                         : HTML::Encoding::encoding_from_xml_declaration($title);
-            if ( $encoding and Encode::resolve_alias($encoding) ) {
-                $encoding_from = "content";
-                {
-                    no warnings 'utf8';
-                    $title = Encode::decode($encoding, $title);
-                }
-            }
-        }
-        if ( $title =~ s{\A.*<title>\s*(.+?)\s*</title>.*\Z}{$1}xmsi ) {
-            $title =~ s/\s+/ /gms; # trim consecutive whitespace
-            $title = HTML::Entities::decode($title); # Get rid of those pesky HTML entities
-            return ( $res->code, $res->request->uri, $title, $encoding_from, $content_type );
-        }
-        else {
-            return ( $res->code, $res->request->uri, undef, undef, $content_type );
-        }
-    }
-    return;
 }
 
 sub parse_date {
