@@ -13,7 +13,7 @@ use Parallel::Iterator ();
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
 
-run($ARGV[0] || 1); # Set concurrency
+run($ARGV[0] || 5); # Set concurrency to 5 (bit.ly's default rate limit)
 
 exit;
 
