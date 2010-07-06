@@ -28,9 +28,8 @@ sub run {
     $dbh->{'pg_enable_utf8'} = 1; # Return data from DB already decoded
 
     my $fetch_sth = $dbh->prepare(<<'EOM');
-SELECT id,url
-FROM url
-WHERE url.fetched_at IS NULL
+SELECT id, url FROM url
+WHERE verified_url_id IS NULL
 LIMIT ?
 EOM
     while( 1 ) {
@@ -186,92 +185,56 @@ sub store_url {
     }
 
     my $insert_sth = $dbh->prepare(<<'EOM');
-INSERT INTO url (id,url,fetched_at,response_code,title,content_type)
-VALUES (?,?,current_timestamp,?,?,?)
+INSERT INTO verified_url (fetched_at,id,url,response_code,title,content_type)
+VALUES (current_timestamp,?,?,?,?,?)
 EOM
 
-    my $update_fail_sth = $dbh->prepare(<<'EOM');
-UPDATE url SET
- fetched_at = current_timestamp,
- response_code = ?
+    my $update_sth = $dbh->prepare(<<'EOM');
+UPDATE url
+SET verified_url_id = ?
 WHERE id = ?
 EOM
 
-    my $update_success_sth = $dbh->prepare(<<'EOM');
-UPDATE url SET
- fetched_at = current_timestamp,
- redirect_id = ?,
- response_code = ?,
- title = ?,
- content_type = ?
-WHERE id = ?
-EOM
-
-    if ( $info->{'real_url'} ) {
-        # A URL was actually resolved, let's try to link it
-        my $url_id = new_uuid();
-        $insert_sth->execute(
-            $url_id,
-            $info->{'real_url'},
-            ( $info->{'code'} || undef ),
-            ( $info->{'title'} ? Encode::encode_utf8( $info->{'title'} ) : undef ),
-            ( $info->{'content_type'} ? substr( $info->{'content_type'}, 0, 50 ) : undef ),
-        );
+    # A URL was actually resolved, let's try to link it
+    my $url_id = new_uuid();
+    $insert_sth->execute(
+        $url_id,
+        ( $info->{'real_url'} || $info->{'url'} ),
+        ( $info->{'code'} || undef ),
+        ( $info->{'title'} ? Encode::encode_utf8( $info->{'title'} ) : undef ),
+        ( $info->{'content_type'} ? substr( $info->{'content_type'}, 0, 50 ) : undef ),
+    );
+    if ( $dbh->err ) {
+        $dbh->rollback();
+        my $sth = $dbh->prepare("SELECT id FROM verified_url WHERE url = ?");
+        $sth->execute( $info->{'real_url'} );
+        ($url_id) = $sth->fetchrow_array();
         if ( $dbh->err ) {
             $dbh->rollback();
-            my $sth = $dbh->prepare("select id from url where url = ?");
-            $sth->execute( $info->{'real_url'} );
-            ($url_id) = $sth->fetchrow_array();
-            if ( $dbh->err ) {
-                $dbh->rollback();
-            }
-            else {
-                $dbh->commit();
-            }
         }
         else {
             $dbh->commit();
-        }
-        # If id of resolved url was found, update original
-        if ( $url_id ) {
-            # First store on original (shortened URL)
-            $update_success_sth->execute(
-                $url_id, # Store redirect to yourself, makes querying easier
-                ( $info->{'code'} || undef ),
-                ( $info->{'title'} ? Encode::encode_utf8( $info->{'title'} ) : undef ),
-                ( $info->{'content_type'} ? substr( $info->{'content_type'}, 0, 50 ) : undef ),
-                $info->{'id'},
-            );
-            # Then update the URL pointed to (expanded)
-            $update_success_sth->execute(
-                $url_id, # Store redirect to yourself, makes querying easier
-                ( $info->{'code'} || undef ),
-                ( $info->{'title'} ? Encode::encode_utf8( $info->{'title'} ) : undef ),
-                ( $info->{'content_type'} ? substr( $info->{'content_type'}, 0, 50 ) : undef ),
-                $url_id,
-            );
-            if ( $dbh->err ) {
-                $dbh->rollback();
-            }
-            else {
-                $dbh->commit();
-            }
         }
     }
     else {
-        # We couldn't resolve the URL, log attempt
-        $update_fail_sth->execute(
-            $info->{'response_code'},
+        $dbh->commit();
+    }
+    # If id of resolved url was found, update original
+    if ( $url_id ) {
+        # First store on original (shortened URL)
+        $update_sth->execute(
+            $url_id,
             $info->{'id'},
         );
         if ( $dbh->err ) {
-            print "Rollback because '" . $dbh->errstr . "'!\n";
             $dbh->rollback();
         }
         else {
             $dbh->commit();
+            print "VERIFIED URL ID:", $url_id, "\n";
         }
     }
+
     print "-" x 79, "\n";
 
 }

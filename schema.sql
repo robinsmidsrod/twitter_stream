@@ -44,11 +44,21 @@ CREATE TABLE twitter (
 CREATE TABLE url (
     id uuid NOT NULL,
     url character varying(2048) NOT NULL,
-    fetched_at timestamp(0) with time zone,
-    response_code integer,
+    verified_url_id uuid
+);
+
+
+--
+-- Name: verified_url; Type: TABLE; Schema: public; Owner: -; Tablespace: 
+--
+
+CREATE TABLE verified_url (
+    id uuid NOT NULL,
+    url character varying(2048) NOT NULL,
+    fetched_at timestamp(0) with time zone NOT NULL,
+    response_code integer NOT NULL,
     title text,
-    content_type character varying(50),
-    redirect_id uuid
+    content_type character varying(50)
 );
 
 
@@ -77,11 +87,19 @@ ALTER TABLE ONLY url
 
 
 --
--- Name: url_url; Type: CONSTRAINT; Schema: public; Owner: -; Tablespace: 
+-- Name: verified_url_pkey; Type: CONSTRAINT; Schema: public; Owner: -; Tablespace: 
 --
 
-ALTER TABLE ONLY url
-    ADD CONSTRAINT url_url UNIQUE (url);
+ALTER TABLE ONLY verified_url
+    ADD CONSTRAINT verified_url_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: verified_url_url; Type: CONSTRAINT; Schema: public; Owner: -; Tablespace: 
+--
+
+ALTER TABLE ONLY verified_url
+    ADD CONSTRAINT verified_url_url UNIQUE (url);
 
 
 --
@@ -92,17 +110,24 @@ CREATE INDEX twitter_mention_at ON twitter USING btree (mention_at DESC);
 
 
 --
--- Name: url_fetched_at; Type: INDEX; Schema: public; Owner: -; Tablespace: 
+-- Name: url_url; Type: INDEX; Schema: public; Owner: -; Tablespace: 
 --
 
-CREATE INDEX url_fetched_at ON url USING btree (fetched_at NULLS FIRST);
+CREATE INDEX url_url ON url USING btree (url);
 
 
 --
--- Name: url_redirect_id; Type: INDEX; Schema: public; Owner: -; Tablespace: 
+-- Name: url_verified_url_id; Type: INDEX; Schema: public; Owner: -; Tablespace: 
 --
 
-CREATE INDEX url_redirect_id ON url USING btree (redirect_id);
+CREATE INDEX url_verified_url_id ON url USING btree (verified_url_id);
+
+
+--
+-- Name: verified_url_fetched_at; Type: INDEX; Schema: public; Owner: -; Tablespace: 
+--
+
+CREATE INDEX verified_url_fetched_at ON verified_url USING btree (fetched_at NULLS FIRST);
 
 
 --
@@ -119,6 +144,14 @@ ALTER TABLE ONLY twitter
 
 ALTER TABLE ONLY twitter
     ADD CONSTRAINT twitter_url_id FOREIGN KEY (url_id) REFERENCES url(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: url_verified_url_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY url
+    ADD CONSTRAINT url_verified_url_id FOREIGN KEY (verified_url_id) REFERENCES verified_url(id) ON UPDATE CASCADE ON DELETE SET NULL;
 
 
 --

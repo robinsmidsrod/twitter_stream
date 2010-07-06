@@ -111,7 +111,7 @@ sub handle_tweet {
         $url_sth->execute( $url_id, $url );
         if ( $dbh->err ) {
             $dbh->rollback();
-            my $sth = $dbh->prepare("select id from url where url = ?");
+            my $sth = $dbh->prepare("SELECT id FROM url WHERE url = ?");
             $sth->execute($url);
             ($url_id ) = $sth->fetchrow_array();
             if ( $dbh->err ) {
@@ -132,7 +132,7 @@ sub handle_tweet {
                 $keyword_sth->execute( $keyword_id, $keyword );
                 if ( $dbh->err ) {
                     $dbh->rollback();
-                    my $sth = $dbh->prepare("select id from keyword where keyword = ?");
+                    my $sth = $dbh->prepare("SELECT id FROM keyword WHERE keyword = ?");
                     $sth->execute($keyword);
                     ($keyword_id) = $sth->fetchrow_array();
                     if ( $dbh->err ) {
