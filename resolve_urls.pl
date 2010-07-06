@@ -8,6 +8,8 @@ use Encode ();
 use HTML::Encoding ();
 use HTML::Entities ();
 use DBI ();
+use IO::Handle;
+use File::Slurp ();
 
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
@@ -42,7 +44,7 @@ EOM
             push @urls, $url;
         }
         if ( @urls > 0 ) {
-            foreach my $info ( fetch_urls(@urls) ) {
+            foreach my $info ( fetch_urls($dbh, @urls) ) {
                 store_url( $info, $dbh, $insert_sth );
             }
         }
@@ -56,10 +58,37 @@ EOM
 }
 
 sub fetch_urls {
-    my (@urls) = @_;
+    my ($dbh, @urls) = @_;
     my @infos;
+    my @children;
     foreach my $url ( @urls ) {
-        push @infos, fetch_url($url);
+        my ($reader, $writer);
+        pipe $reader, $writer;
+        $writer->autoflush(1);
+        my $child;
+        if ( $child = fork ) {
+            # parent
+            push @children, $child;
+            close $writer;
+            my $stored = File::Slurp::slurp($reader);
+            close $reader;
+            push @infos, Storable::thaw($stored);
+        }
+        else {
+            # child
+            die "cannot fork: $!" unless defined($child);
+            $dbh->{'InactiveDestroy'} = 1; # Don't disconnect on exit
+            close $reader;
+            my $info = fetch_url($url);
+            my $stored = Storable::freeze($info);
+            print $writer $stored;
+            close $writer;
+            exit;
+        }
+    }
+    # Wait for children to finish up
+    foreach my $child ( @children ) {
+        waitpid($child,0);
     }
     return @infos;
 }
