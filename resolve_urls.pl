@@ -20,9 +20,6 @@ exit;
 
 sub run {
     my ($concurrency) = @_;
-    my $ua = LWP::UserAgent->new();
-    # Let's lie about who we are, because sites like Facebook won't give us anything useful unless we do
-    $ua->agent("Mozilla/5.0 (Windows; U; Windows NT 6.1; en-US; rv:1.9.2.6) Gecko/20100625 Firefox/3.6.6");
 
     my $dbh = DBI->connect('dbi:Pg:dbname=twitter_stream', "", "", { AutoCommit => 0 } );
     die("Can't connect to database") unless $dbh;
@@ -40,10 +37,14 @@ VALUES (?,current_timestamp, ?, ?, ?, ?)
 EOM
     while( 1 ) {
         $fetch_sth->execute($concurrency);
-        (my $url) = $fetch_sth->fetchrow_array();
-        if ( $url ) {
-            my $info = resolve_redirect( $url, $ua );
-            handle_url( $info, $dbh, $insert_sth );
+        my @urls;
+        while( (my $url) = $fetch_sth->fetchrow_array() ) {
+            push @urls, $url;
+        }
+        if ( @urls > 0 ) {
+            foreach my $info ( fetch_urls(@urls) ) {
+                store_url( $info, $dbh, $insert_sth );
+            }
         }
         else {
             print "Sleeping...\n";
@@ -54,46 +55,22 @@ EOM
     print "Exiting...\n";
 }
 
-sub handle_url {
-    my ($info, $dbh, $sth) = @_;
-
-    print "URL:           ", $info->{'url'}, "\n";
-
-    if ( $info->{'code'} ) {
-        print "HTTP STATUS:   ", $info->{'code'}, "\n";
+sub fetch_urls {
+    my (@urls) = @_;
+    my @infos;
+    foreach my $url ( @urls ) {
+        push @infos, fetch_url($url);
     }
-    if ( $info->{'real_url'} ) {
-        print "RESOLVED URL:  ", $info->{'real_url'}, "\n";
-    }
-    if ( $info->{'title'} ) {
-        print "TITLE:         ", $info->{'title'}, "\n";
-    }
-    if ( $info->{'encoding_from'} ) {
-        print "ENCODING FROM: ", $info->{'encoding_from'}, "\n";
-    }
-    if ( $info->{'content_type'} ) {
-        print "CONTENT TYPE:  ", $info->{'content_type'}, "\n";
-    }
-    $sth->execute(
-        $info->{'url'},
-        ( $info->{'code'} || undef ),
-        ( $info->{'real_url'} || undef ),
-        ( $info->{'title'} ? Encode::encode_utf8( $info->{'title'} ) : undef ),
-        ( $info->{'content_type'} ? substr( $info->{'content_type'}, 0, 50 ) : undef ),
-    );
-    if ( $dbh->err ) {
-        print "Rollback because '" . $dbh->errstr . "'!\n";
-        $dbh->rollback();
-    }
-    else {
-        $dbh->commit();
-    }
-    print "-" x 79, "\n";
-
+    return @infos;
 }
 
-sub resolve_redirect {
-    my ($url,$ua) = @_;
+sub fetch_url {
+    my ($url) = @_;
+
+    my $ua = LWP::UserAgent->new();
+    # Let's lie about who we are, because sites like Facebook won't give us anything useful unless we do
+    $ua->agent("Mozilla/5.0 (Windows; U; Windows NT 6.1; en-US; rv:1.9.2.6) Gecko/20100625 Firefox/3.6.6");
+
     my $content = "";
     my $res;
     eval {
@@ -169,5 +146,44 @@ sub resolve_redirect {
         code => $res->code,
     };
 }
+
+sub store_url {
+    my ($info, $dbh, $sth) = @_;
+
+    print "URL:           ", $info->{'url'}, "\n";
+
+    if ( $info->{'code'} ) {
+        print "HTTP STATUS:   ", $info->{'code'}, "\n";
+    }
+    if ( $info->{'real_url'} ) {
+        print "RESOLVED URL:  ", $info->{'real_url'}, "\n";
+    }
+    if ( $info->{'title'} ) {
+        print "TITLE:         ", $info->{'title'}, "\n";
+    }
+    if ( $info->{'encoding_from'} ) {
+        print "ENCODING FROM: ", $info->{'encoding_from'}, "\n";
+    }
+    if ( $info->{'content_type'} ) {
+        print "CONTENT TYPE:  ", $info->{'content_type'}, "\n";
+    }
+    $sth->execute(
+        $info->{'url'},
+        ( $info->{'code'} || undef ),
+        ( $info->{'real_url'} || undef ),
+        ( $info->{'title'} ? Encode::encode_utf8( $info->{'title'} ) : undef ),
+        ( $info->{'content_type'} ? substr( $info->{'content_type'}, 0, 50 ) : undef ),
+    );
+    if ( $dbh->err ) {
+        print "Rollback because '" . $dbh->errstr . "'!\n";
+        $dbh->rollback();
+    }
+    else {
+        $dbh->commit();
+    }
+    print "-" x 79, "\n";
+
+}
+
 
 1;
