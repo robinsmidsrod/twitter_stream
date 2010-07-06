@@ -10,6 +10,7 @@ use AnyEvent;
 use AnyEvent::Twitter::Stream;
 use URI::Find::UTF8;
 use DBI ();
+use Data::UUID ();
 
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
@@ -36,7 +37,9 @@ sub init_stream {
     my $dbh = DBI->connect('dbi:Pg:dbname=twitter_stream', "", "", { AutoCommit => 0 } );
     die("Can't connect to database") unless $dbh;
 
-    my $insert_sth = $dbh->prepare("INSERT INTO twitter (twitter_id,created_at,created_by,keyword,url) VALUES (?,?,?,?,?)");
+    my $mention_sth = $dbh->prepare("INSERT INTO twitter (twitter_id,mention_at,mention_by,url_id,keyword_id) VALUES (?,?,?,?,?)");
+    my $keyword_sth = $dbh->prepare("INSERT INTO keyword (id,keyword) VALUES (?,?)");
+    my $url_sth     = $dbh->prepare("INSERT INTO url (id,url) VALUES (?,?)");
 
     return AnyEvent::Twitter::Stream->new(
         username => $username,
@@ -44,7 +47,7 @@ sub init_stream {
         method => 'sample',
         on_tweet => sub {
             my ($tweet) = @_;
-            handle_tweet($tweet, $dbh, $insert_sth);
+            handle_tweet($tweet, $dbh, $mention_sth,$keyword_sth,$url_sth);
         },
         on_keepalive => sub {
             warn "-- keepalive --\n";
@@ -82,7 +85,7 @@ sub get_config {
 }
 
 sub handle_tweet {
-    my ($tweet, $dbh, $sth) = @_;
+    my ($tweet, $dbh, $mention_sth, $keyword_sth, $url_sth ) = @_;
     return unless $tweet->{'user'}->{'screen_name'};
     return unless $tweet->{'text'};
     return unless $tweet->{'text'} =~ m{http}i;
@@ -104,18 +107,80 @@ sub handle_tweet {
     my $timestamp = parse_date( $tweet->{'created_at'} );
 
     foreach my $url ( sort @urls ) {
-        foreach my $keyword ( sort keys %keywords ) {
+        my $url_id = new_uuid();
+        $url_sth->execute( $url_id, $url );
+        if ( $dbh->err ) {
+            $dbh->rollback();
+            my $sth = $dbh->prepare("select id from url where url = ?");
+            $sth->execute($url);
+            ($url_id ) = $sth->fetchrow_array();
+            if ( $dbh->err ) {
+                $dbh->rollback();
+            }
+            else {
+                $dbh->commit;
+            }
+        }
+        else {
+            $dbh->commit();
+        }
+        next unless $url_id; # Skip if wrong stuff happened
+        if ( keys %keywords > 0 ) {
+            foreach my $keyword ( sort keys %keywords ) {
+                $keyword = lc $keyword;
+                my $keyword_id = new_uuid();
+                $keyword_sth->execute( $keyword_id, $keyword );
+                if ( $dbh->err ) {
+                    $dbh->rollback();
+                    my $sth = $dbh->prepare("select id from keyword where keyword = ?");
+                    $sth->execute($keyword);
+                    ($keyword_id) = $sth->fetchrow_array();
+                    if ( $dbh->err ) {
+                        $dbh->rollback();
+                    }
+                    else {
+                        $dbh->commit;
+                    }
+                }
+                else {
+                    $dbh->commit();
+                }
+                next unless $keyword_id; # Skip if wrong stuff happened
+                print "ID:            ", $tweet->{'id'}, "\n";
+                print "TIMESTAMP:     ", $timestamp, "\n";
+                print "NAME:          ", $tweet->{'user'}->{'name'}, "\n";
+                print "KEYWORD:       ", $keyword, "\n";
+                print "KEYWORD ID:    ", $keyword_id, "\n";
+                print "URL:           ", $url, "\n";
+                print "URL ID:        ", $url_id, "\n";
+                $mention_sth->execute(
+                    $tweet->{'id'},
+                    $timestamp,
+                    $tweet->{'user'}->{'name'},
+                    $url_id,
+                    $keyword_id,
+                );
+                if ( $dbh->err ) {
+                    $dbh->rollback();
+                }
+                else {
+                    $dbh->commit();
+                }
+                print "-" x 79, "\n";
+            }
+        }
+        else {
             print "ID:            ", $tweet->{'id'}, "\n";
             print "TIMESTAMP:     ", $timestamp, "\n";
             print "NAME:          ", $tweet->{'user'}->{'name'}, "\n";
-            print "KEYWORD:       ", $keyword, "\n";
             print "URL:           ", $url, "\n";
-            $sth->execute(
+            print "URL ID:        ", $url_id, "\n";
+            $mention_sth->execute(
                 $tweet->{'id'},
                 $timestamp,
                 $tweet->{'user'}->{'name'},
-                $keyword,
-                $url
+                $url_id,
+                undef,
             );
             if ( $dbh->err ) {
                 $dbh->rollback();
@@ -152,6 +217,10 @@ sub parse_date {
     ( my $minute = $str ) =~ s/\A\w+?\s+?\w+?\s+?\d+?\s+?\d+?:(\d{2}).*\Z/$1/xms;
     ( my $second = $str ) =~ s/\A\w+?\s+?\w+?\s+?\d+?\s+?\d+?:\d+?:(\d{2}).*\Z/$1/xms;
     return "$year-$month-$day $hour:$minute:$second UTC";
+}
+
+sub new_uuid {
+    return Data::UUID->new->create_str();
 }
 
 1;

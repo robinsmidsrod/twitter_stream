@@ -9,6 +9,7 @@ use HTML::Encoding ();
 use HTML::Entities ();
 use DBI ();
 use Parallel::Iterator ();
+use Data::UUID ();
 
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
@@ -27,24 +28,20 @@ sub run {
     $dbh->{'pg_enable_utf8'} = 1; # Return data from DB already decoded
 
     my $fetch_sth = $dbh->prepare(<<'EOM');
-SELECT DISTINCT(twitter.url)
-FROM twitter LEFT JOIN url ON twitter.url=url.url
-WHERE url.url IS NULL
+SELECT id,url
+FROM url
+WHERE url.fetched_at IS NULL
 LIMIT ?
-EOM
-    my $insert_sth = $dbh->prepare(<<'EOM');
-INSERT INTO url (url,fetched_at,response_code,real_url,title,content_type)
-VALUES (?,current_timestamp, ?, ?, ?, ?)
 EOM
     while( 1 ) {
         $fetch_sth->execute($concurrency);
         my @urls;
-        while( (my $url) = $fetch_sth->fetchrow_array() ) {
-            push @urls, $url;
+        while( my ($id, $url) = $fetch_sth->fetchrow_array() ) {
+            push @urls, [ $id, $url ];
         }
         if ( @urls > 0 ) {
             foreach my $info ( fetch_urls($dbh, @urls) ) {
-                store_url( $info, $dbh, $insert_sth );
+                store_url( $info, $dbh );
             }
         }
         else {
@@ -76,6 +73,10 @@ sub fetch_urls {
 sub fetch_url {
     my ($url) = @_;
 
+    # Dereference
+    my $id = $url->[0];
+    $url = $url->[1];
+
     my $ua = LWP::UserAgent->new();
     # Let's lie about who we are, because sites like Facebook won't give us anything useful unless we do
     $ua->agent("Mozilla/5.0 (Windows; U; Windows NT 6.1; en-US; rv:1.9.2.6) Gecko/20100625 Firefox/3.6.6");
@@ -102,7 +103,10 @@ sub fetch_url {
     };
     if ( $@ ) {
         print "Timeout!\n";
-        return { url => $url }; # timeout
+        return {
+          id => $id,
+         url => $url
+        }; # timeout
     }
     if ( $res->is_success ) {
         my $content_type = $res->header('Content-Type');
@@ -132,6 +136,7 @@ sub fetch_url {
             $title =~ s/\s+/ /gms; # trim consecutive whitespace
             $title = HTML::Entities::decode($title); # Get rid of those pesky HTML entities
             return {
+                id            => $id,
                 url           => $url,
                 code          => $res->code,
                 real_url      => $res->request->uri,
@@ -142,6 +147,7 @@ sub fetch_url {
         }
         else {
             return {
+                id           => $id,
                 url          => $url,
                 code         => $res->code,
                 real_url     => $res->request->uri,
@@ -151,14 +157,16 @@ sub fetch_url {
     }
     # Fetch failed, return what we got
     return {
-        url => $url,
+        id   => $id,
+        url  => $url,
         code => $res->code,
     };
 }
 
 sub store_url {
-    my ($info, $dbh, $sth) = @_;
+    my ($info, $dbh) = @_;
 
+    print "ID:            ", $info->{'id'}, "\n";
     print "URL:           ", $info->{'url'}, "\n";
 
     if ( $info->{'code'} ) {
@@ -176,23 +184,100 @@ sub store_url {
     if ( $info->{'content_type'} ) {
         print "CONTENT TYPE:  ", $info->{'content_type'}, "\n";
     }
-    $sth->execute(
-        $info->{'url'},
-        ( $info->{'code'} || undef ),
-        ( $info->{'real_url'} || undef ),
-        ( $info->{'title'} ? Encode::encode_utf8( $info->{'title'} ) : undef ),
-        ( $info->{'content_type'} ? substr( $info->{'content_type'}, 0, 50 ) : undef ),
-    );
-    if ( $dbh->err ) {
-        print "Rollback because '" . $dbh->errstr . "'!\n";
-        $dbh->rollback();
+
+    my $insert_sth = $dbh->prepare(<<'EOM');
+INSERT INTO url (id,url,fetched_at,response_code,title,content_type)
+VALUES (?,?,current_timestamp,?,?,?)
+EOM
+
+    my $update_fail_sth = $dbh->prepare(<<'EOM');
+UPDATE url SET
+ fetched_at = current_timestamp,
+ response_code = ?
+WHERE id = ?
+EOM
+
+    my $update_success_sth = $dbh->prepare(<<'EOM');
+UPDATE url SET
+ fetched_at = current_timestamp,
+ redirect_id = ?,
+ response_code = ?,
+ title = ?,
+ content_type = ?
+WHERE id = ?
+EOM
+
+    if ( $info->{'real_url'} ) {
+        # A URL was actually resolved, let's try to link it
+        my $url_id = new_uuid();
+        $insert_sth->execute(
+            $url_id,
+            $info->{'real_url'},
+            ( $info->{'code'} || undef ),
+            ( $info->{'title'} ? Encode::encode_utf8( $info->{'title'} ) : undef ),
+            ( $info->{'content_type'} ? substr( $info->{'content_type'}, 0, 50 ) : undef ),
+        );
+        if ( $dbh->err ) {
+            $dbh->rollback();
+            my $sth = $dbh->prepare("select id from url where url = ?");
+            $sth->execute( $info->{'real_url'} );
+            ($url_id) = $sth->fetchrow_array();
+            if ( $dbh->err ) {
+                $dbh->rollback();
+            }
+            else {
+                $dbh->commit();
+            }
+        }
+        else {
+            $dbh->commit();
+        }
+        # If id of resolved url was found, update original
+        if ( $url_id ) {
+            # First store on original (shortened URL)
+            $update_success_sth->execute(
+                $url_id, # Store redirect to yourself, makes querying easier
+                ( $info->{'code'} || undef ),
+                ( $info->{'title'} ? Encode::encode_utf8( $info->{'title'} ) : undef ),
+                ( $info->{'content_type'} ? substr( $info->{'content_type'}, 0, 50 ) : undef ),
+                $info->{'id'},
+            );
+            # Then update the URL pointed to (expanded)
+            $update_success_sth->execute(
+                $url_id, # Store redirect to yourself, makes querying easier
+                ( $info->{'code'} || undef ),
+                ( $info->{'title'} ? Encode::encode_utf8( $info->{'title'} ) : undef ),
+                ( $info->{'content_type'} ? substr( $info->{'content_type'}, 0, 50 ) : undef ),
+                $url_id,
+            );
+            if ( $dbh->err ) {
+                $dbh->rollback();
+            }
+            else {
+                $dbh->commit();
+            }
+        }
     }
     else {
-        $dbh->commit();
+        # We couldn't resolve the URL, log attempt
+        $update_fail_sth->execute(
+            $info->{'response_code'},
+            $info->{'id'},
+        );
+        if ( $dbh->err ) {
+            print "Rollback because '" . $dbh->errstr . "'!\n";
+            $dbh->rollback();
+        }
+        else {
+            $dbh->commit();
+        }
     }
     print "-" x 79, "\n";
 
 }
 
+sub new_uuid {
+    return Data::UUID->new->create_str();
+}
 
 1;
