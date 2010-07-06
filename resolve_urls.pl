@@ -8,8 +8,7 @@ use Encode ();
 use HTML::Encoding ();
 use HTML::Entities ();
 use DBI ();
-use IO::Handle;
-use File::Slurp ();
+use Parallel::Iterator ();
 
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
@@ -59,37 +58,18 @@ EOM
 
 sub fetch_urls {
     my ($dbh, @urls) = @_;
-    my @infos;
-    my @children;
-    foreach my $url ( @urls ) {
-        my ($reader, $writer);
-        pipe $reader, $writer;
-        $writer->autoflush(1);
-        my $child;
-        if ( $child = fork ) {
-            # parent
-            push @children, $child;
-            close $writer;
-            my $stored = File::Slurp::slurp($reader);
-            close $reader;
-            push @infos, Storable::thaw($stored);
-        }
-        else {
-            # child
-            die "cannot fork: $!" unless defined($child);
+
+    my @infos = Parallel::Iterator::iterate_as_array(
+        {
+            workers => scalar @urls,
+        },
+        sub {
+            my ($id, $url) = @_;
             $dbh->{'InactiveDestroy'} = 1; # Don't disconnect on exit
-            close $reader;
-            my $info = fetch_url($url);
-            my $stored = Storable::freeze($info);
-            print $writer $stored;
-            close $writer;
-            exit;
-        }
-    }
-    # Wait for children to finish up
-    foreach my $child ( @children ) {
-        waitpid($child,0);
-    }
+            return ( $id, fetch_url($url) );
+        },
+        \@urls,
+    );
     return @infos;
 }
 
