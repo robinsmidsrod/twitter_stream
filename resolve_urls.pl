@@ -29,10 +29,9 @@ sub run {
     $dbh->{'pg_enable_utf8'} = 1; # Return data from DB already decoded
 
     my $fetch_sth = $dbh->prepare(<<'EOM');
-SELECT url FROM twitter
-WHERE url NOT IN ( SELECT url FROM url)
-GROUP BY url
-ORDER BY COUNT(*) DESC
+SELECT DISTINCT(twitter.url)
+FROM twitter LEFT JOIN url ON twitter.url=url.url
+WHERE url.url IS NULL
 LIMIT ?
 EOM
     my $insert_sth = $dbh->prepare(<<'EOM');
