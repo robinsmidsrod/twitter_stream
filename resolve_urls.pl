@@ -30,6 +30,7 @@ sub run {
     my $fetch_sth = $dbh->prepare(<<'EOM');
 SELECT id, url FROM url
 WHERE verified_url_id IS NULL
+ORDER BY RANDOM()
 LIMIT ?
 EOM
     while( 1 ) {
@@ -101,10 +102,12 @@ sub fetch_url {
         alarm 0;
     };
     if ( $@ ) {
+        warn($@) unless $@ eq "alarm\n";
         print "Timeout!\n";
         return {
-          id => $id,
-         url => $url
+          id  => $id,
+         url  => $url,
+         code => 0,
         }; # timeout
     }
     if ( $res->is_success ) {
