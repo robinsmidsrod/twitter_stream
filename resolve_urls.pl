@@ -14,35 +14,31 @@ use Data::UUID ();
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
 
-run($ARGV[0] || 5); # Set concurrency to 5 (bit.ly's default rate limit)
+run();
 
 exit;
 
 ############################################
 
 sub run {
-    my ($concurrency) = @_;
 
     my $dbh = DBI->connect('dbi:Pg:dbname=twitter_stream', "", "", { AutoCommit => 0 } );
     die("Can't connect to database") unless $dbh;
     $dbh->{'pg_enable_utf8'} = 1; # Return data from DB already decoded
 
-    my $fetch_sth = $dbh->prepare(<<'EOM');
-SELECT id, url FROM url
-WHERE verified_url_id IS NULL
-ORDER BY RANDOM()
-LIMIT ?
+    my $mention_select_sth = $dbh->prepare(<<'EOM');
+SELECT id, mention_at, url_id, keyword_id
+FROM mention
+ORDER BY mention_at DESC
+LIMIT 1
 EOM
+
     while( 1 ) {
-        $fetch_sth->execute($concurrency);
-        my @urls;
-        while( my ($id, $url) = $fetch_sth->fetchrow_array() ) {
-            push @urls, [ $id, $url ];
-        }
-        if ( @urls > 0 ) {
-            foreach my $info ( fetch_urls($dbh, @urls) ) {
-                store_url( $info, $dbh );
-            }
+        $mention_select_sth->execute();
+        my $mention_row = $mention_select_sth->fetchrow_hashref();
+        if ( ref($mention_row) eq 'HASH' and keys %$mention_row > 0 ) {
+            handle_mention( $dbh, $mention_row );
+            print "-" x 79, "\n";
         }
         else {
             print "Sleeping...\n";
@@ -53,29 +49,38 @@ EOM
     print "Exiting...\n";
 }
 
-sub fetch_urls {
-    my ($dbh, @urls) = @_;
+sub handle_mention {
+    my ($dbh, $mention_row) = @_;
 
-    my @infos = Parallel::Iterator::iterate_as_array(
-        {
-            workers => scalar @urls,
-        },
-        sub {
-            my ($id, $url) = @_;
-            $dbh->{'InactiveDestroy'} = 1; # Don't disconnect on exit
-            return ( $id, fetch_url($url) );
-        },
-        \@urls,
-    );
-    return @infos;
+    my $sth = $dbh->prepare("SELECT * FROM url WHERE id = ?");
+    $sth->execute( $mention_row->{'url_id'} );
+    my $url_row = $sth->fetchrow_hashref();
+
+    # Verify that URL record exists (sanity check)
+    unless ( ref($url_row) eq 'HASH' and keys %$url_row > 0 ) {
+        print "No URL record found for url_id '" . $mention_row->{'url_id'} . "'\n";
+        return;
+    }
+
+    # Verify URL and update record ( in memory update as well )
+    unless ( $url_row->{'is_verified'} ) {
+        verify_url( $dbh, $url_row );
+    }
+
+    # If verification failed for some reason, bail out
+    if ( $url_row->{'verify_failed'} ) {
+        print "Verify (has) failed for '" . $url_row->{'url'} . "!\n";
+        return;
+    }
+
+    store_mention( $dbh, $mention_row, $url_row );
+    return;
 }
 
-sub fetch_url {
-    my ($url) = @_;
+sub verify_url {
+    my ( $dbh, $url_row ) = @_;
 
-    # Dereference
-    my $id = $url->[0];
-    $url = $url->[1];
+    print "Verifying URL: " . $url_row->{'url'} . "\n";
 
     my $ua = LWP::UserAgent->new();
     # Let's lie about who we are, because sites like Facebook won't give us anything useful unless we do
@@ -88,7 +93,7 @@ sub fetch_url {
         alarm 3;
         my $chunks_read = 0;
         $res = $ua->get(
-            $url,
+            $url_row->{'url'},
             ":content_cb" => sub {
                 my ($data, $res, $ua) = @_;
                 die("Not HTML!\n") if $res->header('Content-type') !~ m{^(?:text/html|application/xhtml+xml)};
@@ -102,118 +107,104 @@ sub fetch_url {
         alarm 0;
     };
     if ( $@ ) {
-        warn($@) unless $@ eq "alarm\n";
-        print "Timeout!\n";
-        return {
-          id  => $id,
-         url  => $url,
-         code => 0,
-        }; # timeout
+        die($@) unless $@ eq "alarm\n";
+        print "Timeout while fetching '" . $url_row->{'url'} . "'!\n";
+
+        # Inform caller about result
+        $url_row->{'is_verified'} = 1;
+        $url_row->{'verify_failed'} = 1;
+
+        my $sth = $dbh->prepare("UPDATE url SET is_verified=TRUE, verify_failed=TRUE, verified_at=current_timestamp, verified_url_id=NULL WHERE id = ?");
+        $sth->execute( $url_row->{'id'} );
+        if ( $dbh->err ) {
+            $dbh->rollback();
+        }
+        else {
+            $dbh->commit();
+        }
+        return;
     }
-    if ( $res->is_success ) {
-        my $content_type = $res->header('Content-Type');
-        $content_type = (split(/;/, $content_type, 2))[0];
-        my $title = $content;
-        my $encoding_from = "";
-        if ( $res->content_charset and Encode::resolve_alias($res->content_charset) ) {
-            $encoding_from = "header";
+
+    if ( $res->code < 200 or $res->code >= 300 ) {
+        # Fetch failed, we got something else than 2xx return code (we consider 3xx failure)
+
+        print "HTTP error " . $res->code . " while fetching '" . $url_row->{'url'} . "'!\n";
+
+        # Inform caller about result
+        $url_row->{'is_verified'} = 1;
+        $url_row->{'verify_failed'} = 1;
+
+        my $sth = $dbh->prepare("UPDATE url SET is_verified=TRUE, verify_failed=TRUE, verified_at=current_timestamp, verified_url_id=NULL WHERE id = ?");
+        $sth->execute( $url_row->{'id'} );
+        if ( $dbh->err ) {
+            $dbh->rollback();
+        }
+        else {
+            $dbh->commit();
+        }
+        return;
+    }
+
+    # Fetch succeeded, extract info
+    my $content_type = $res->header('Content-Type');
+    $content_type = (split(/;/, $content_type, 2))[0];
+
+    my $url = $res->request->uri;
+
+    my $title = $content;
+    my $encoding_from = "";
+    if ( $res->content_charset and Encode::resolve_alias($res->content_charset) ) {
+        $encoding_from = "header";
+        {
+            no warnings 'utf8';
+            $title = Encode::decode($res->content_charset, $title);
+        }
+    }
+    else {
+        my $encoding = $content_type eq 'text/html'
+                     ? HTML::Encoding::encoding_from_html_document($title)
+                     : HTML::Encoding::encoding_from_xml_declaration($title);
+        if ( $encoding and Encode::resolve_alias($encoding) ) {
+            $encoding_from = "content";
             {
                 no warnings 'utf8';
-                $title = Encode::decode($res->content_charset, $title);
+                $title = Encode::decode($encoding, $title);
             }
         }
-        else {
-            my $encoding = $content_type eq 'text/html'
-                         ? HTML::Encoding::encoding_from_html_document($title)
-                         : HTML::Encoding::encoding_from_xml_declaration($title);
-            if ( $encoding and Encode::resolve_alias($encoding) ) {
-                $encoding_from = "content";
-                {
-                    no warnings 'utf8';
-                    $title = Encode::decode($encoding, $title);
-                }
-            }
-        }
-        if ( $title =~ s{\A.*<title>\s*(.+?)\s*</title>.*\Z}{$1}xmsi ) {
-            $title =~ s/\s+/ /gms; # trim consecutive whitespace
-            $title = HTML::Entities::decode($title); # Get rid of those pesky HTML entities
-            return {
-                id            => $id,
-                url           => $url,
-                code          => $res->code,
-                real_url      => $res->request->uri,
-                title         => ( $title || undef ),
-                encoding_from => $encoding_from,
-                content_type  => $content_type,
-            };
-        }
-        else {
-            return {
-                id           => $id,
-                url          => $url,
-                code         => $res->code,
-                real_url     => $res->request->uri,
-                content_type => $content_type,
-            };
-        }
     }
-    # Fetch failed, return what we got
-    return {
-        id   => $id,
-        url  => $url,
-        code => $res->code,
-    };
-}
-
-sub store_url {
-    my ($info, $dbh) = @_;
-
-    print "ID:            ", $info->{'id'}, "\n";
-    print "URL:           ", $info->{'url'}, "\n";
-
-    if ( $info->{'code'} ) {
-        print "HTTP STATUS:   ", $info->{'code'}, "\n";
+    if ( $title =~ s{\A.*<title>\s*(.+?)\s*</title>.*\Z}{$1}xmsi ) {
+        $title =~ s/\s+/ /gms; # trim consecutive whitespace
+        $title = HTML::Entities::decode($title); # Get rid of those pesky HTML entities
     }
-    if ( $info->{'real_url'} ) {
-        print "RESOLVED URL:  ", $info->{'real_url'}, "\n";
-    }
-    if ( $info->{'title'} ) {
-        print "TITLE:         ", $info->{'title'}, "\n";
-    }
-    if ( $info->{'encoding_from'} ) {
-        print "ENCODING FROM: ", $info->{'encoding_from'}, "\n";
-    }
-    if ( $info->{'content_type'} ) {
-        print "CONTENT TYPE:  ", $info->{'content_type'}, "\n";
+    else {
+        $title = undef;
     }
 
-    my $insert_sth = $dbh->prepare(<<'EOM');
-INSERT INTO verified_url (fetched_at,id,url,response_code,title,content_type)
-VALUES (current_timestamp,?,?,?,?,?)
+    # Create verified_url record with $url, $content_type and $title + $url_row data
+    my $verified_url_sth = $dbh->prepare(<<'EOM');
+INSERT INTO verified_url (id, url, verified_at,       content_type, title, first_mention_id, first_mention_at, first_mention_by_name, first_mention_by_user)
+VALUES                   (?,  ?,   current_timestamp, ?,            ?,     ?,                ?,                ?,                     ?                    )
 EOM
 
-    my $update_sth = $dbh->prepare(<<'EOM');
-UPDATE url
-SET verified_url_id = ?
-WHERE id = ?
-EOM
-
-    # A URL was actually resolved, let's try to link it
-    my $url_id = new_uuid();
-    $insert_sth->execute(
-        $url_id,
-        ( $info->{'real_url'} || $info->{'url'} ),
-        ( $info->{'code'} || undef ),
-        ( $info->{'title'} ? Encode::encode_utf8( $info->{'title'} ) : undef ),
-        ( $info->{'content_type'} ? substr( $info->{'content_type'}, 0, 50 ) : undef ),
+    my $verified_url_id = new_uuid();
+    $verified_url_sth->execute(
+        $verified_url_id,
+        $url,
+        substr( $content_type, 0, 50 ),
+        ( defined($title) ? Encode::encode_utf8($title) : undef ),
+        $url_row->{'first_mention_id'},
+        $url_row->{'first_mention_at'},
+        $url_row->{'first_mention_by_name'},
+        $url_row->{'first_mention_by_user'},
     );
     if ( $dbh->err ) {
         $dbh->rollback();
         my $sth = $dbh->prepare("SELECT id FROM verified_url WHERE url = ?");
-        $sth->execute( $info->{'real_url'} );
-        ($url_id) = $sth->fetchrow_array();
+        $sth->execute($url);
+        ($verified_url_id) = $sth->fetchrow_array();
         if ( $dbh->err ) {
             $dbh->rollback();
+            undef $verified_url_id;
         }
         else {
             $dbh->commit();
@@ -222,24 +213,149 @@ EOM
     else {
         $dbh->commit();
     }
-    # If id of resolved url was found, update original
-    if ( $url_id ) {
-        # First store on original (shortened URL)
-        $update_sth->execute(
-            $url_id,
-            $info->{'id'},
-        );
+    unless ( $verified_url_id ) {
+        # Storing the verified URL failed in some way, signal failure
+        $url_row->{'is_verified'} = 1;
+        $url_row->{'verify_failed'} = 1;
+
+        print "Failed resolving verified_url_id for '" . $url . "'!\n";
+
+        # Update the database about verification failure - this might fail as well, because database inconsitency was what brought us here
+        # This avoids hammering URLs in repetition because of database errors
+        my $sth = $dbh->prepare("UPDATE url SET is_verified=TRUE, verify_failed=TRUE, verified_at=current_timestamp, verified_url_id=NULL WHERE id = ?");
+        $sth->execute( $url_row->{'id'} );
         if ( $dbh->err ) {
             $dbh->rollback();
         }
         else {
             $dbh->commit();
-            print "VERIFIED URL ID:", $url_id, "\n";
+        }
+
+        return;
+    }
+
+    # Update url record with info about verification
+    my $sth = $dbh->prepare("UPDATE url SET is_verified=TRUE, verify_failed=FALSE, verified_at=current_timestamp, verified_url_id=? WHERE id = ?");
+    $sth->execute(
+        $verified_url_id,
+        $url_row->{'id'}
+    );
+    if ( $dbh->err ) {
+        $dbh->rollback();
+    }
+    else {
+        $dbh->commit();
+    }
+
+    # Inform caller about result
+    $url_row->{'is_verified'} = 1;
+    $url_row->{'verify_failed'} = 0;
+    $url_row->{'verified_url_id'} = $verified_url_id;
+
+    print "Full URL: ", $url, "\n";
+    print "Title: ", $title, "\n" if defined( $title );
+    print "Content-Type: ", $content_type, "\n";
+    print "Verified OK: ", $verified_url_id, "\n";
+
+    return;
+}
+
+sub store_mention {
+    my ( $dbh, $mention_row, $url_row ) = @_;
+
+    print "Storing mention of " . $url_row->{'verified_url_id'} . "\n";
+
+    my @precision = ( 'day', 'week', 'month', 'year' );
+
+    my $fail = 0;
+
+    if ( $mention_row->{'keyword_id'} ) {
+        # Create record in mention_day/week/month/year_keyword
+        print "    with keyword " . $mention_row->{'keyword_id'} . "\n";
+        foreach my $precision ( @precision ) {
+            my $sth = $dbh->prepare(<<"EOM");
+INSERT INTO mention_${precision}_keyword (mention_at, verified_url_id, keyword_id, mention_count)
+VALUES ( date_trunc('$precision', ?::date)::date, ?, ?, 1)
+EOM
+            $sth->execute(
+                $mention_row->{'mention_at'},
+                $url_row->{'verified_url_id'},
+                $mention_row->{'keyword_id'},
+            );
+            if ( $dbh->err ) {
+                $dbh->rollback();
+                my $update_sth = $dbh->prepare(<<"EOM");
+UPDATE mention_${precision}_keyword SET mention_count = mention_count + 1
+WHERE mention_at = date_trunc('$precision', ?::date)::date AND verified_url_id = ? AND keyword_id = ?
+EOM
+                $update_sth->execute(
+                    $mention_row->{'mention_at'},
+                    $url_row->{'verified_url_id'},
+                    $mention_row->{'keyword_id'},
+                );
+                if ( $dbh->err ) {
+                    $dbh->rollback();
+                    $fail = 1;
+                }
+                else {
+                    $dbh->commit();
+                }
+            }
+            else {
+                $dbh->commit();
+            }
+        }
+    }
+    else {
+        # Create record in mention_day/week/month/year
+        foreach my $precision ( @precision ) {
+            my $sth = $dbh->prepare(<<"EOM");
+INSERT INTO mention_${precision} (mention_at, verified_url_id, mention_count)
+VALUES ( date_trunc('$precision', ?::date)::date, ?, 1)
+EOM
+            $sth->execute(
+                $mention_row->{'mention_at'},
+                $url_row->{'verified_url_id'},
+            );
+            if ( $dbh->err ) {
+                $dbh->rollback();
+                my $update_sth = $dbh->prepare(<<"EOM");
+UPDATE mention_${precision} SET mention_count = mention_count + 1
+WHERE mention_at = date_trunc('$precision', ?::date)::date AND verified_url_id = ?
+EOM
+                $update_sth->execute(
+                    $mention_row->{'mention_at'},
+                    $url_row->{'verified_url_id'},
+                );
+                if ( $dbh->err ) {
+                    $dbh->rollback();
+                    $fail = 1;
+                }
+                else {
+                    $dbh->commit();
+                }
+            }
+            else {
+                $dbh->commit();
+            }
         }
     }
 
-    print "-" x 79, "\n";
+    # Delete mention if everything went ok
+    unless ( $fail ) {
+        my $delete_sth = $dbh->prepare("DELETE FROM mention WHERE id = ?");
+        $delete_sth->execute( $mention_row->{'id'} );
+        if ( $dbh->err ) {
+            $dbh->rollback();
+            print "Database error deleting mention " . $mention_row->{'id'} . "\n";
+        }
+        else {
+            $dbh->commit();
+            print "Mention stored OK\n";
+        }
+    }
 
+    return;
 }
 
 sub new_uuid {

@@ -37,9 +37,11 @@ sub init_stream {
     my $dbh = DBI->connect('dbi:Pg:dbname=twitter_stream', "", "", { AutoCommit => 0 } );
     die("Can't connect to database") unless $dbh;
 
-    my $mention_sth = $dbh->prepare("INSERT INTO twitter (twitter_id,mention_at,mention_by,url_id,keyword_id) VALUES (?,?,?,?,?)");
-    my $keyword_sth = $dbh->prepare("INSERT INTO keyword (id,keyword) VALUES (?,?)");
-    my $url_sth     = $dbh->prepare("INSERT INTO url (id,url) VALUES (?,?)");
+    my $mention_sth        = $dbh->prepare("INSERT INTO mention (id, mention_at, url_id, keyword_id) VALUES (?,?,?,?)");
+    my $keyword_insert_sth = $dbh->prepare("INSERT INTO keyword (id, keyword) VALUES (?,?)");
+    my $keyword_select_sth = $dbh->prepare("SELECT id FROM keyword WHERE keyword = ?");
+    my $url_insert_sth     = $dbh->prepare("INSERT INTO url (id, url, host, first_mention_id, first_mention_at, first_mention_by_name, first_mention_by_user) VALUES (?,?,?,?,?,?,?)");
+    my $url_select_sth     = $dbh->prepare("SELECT id FROM url WHERE url = ?");
 
     return AnyEvent::Twitter::Stream->new(
         username => $username,
@@ -47,7 +49,15 @@ sub init_stream {
         method => 'sample',
         on_tweet => sub {
             my ($tweet) = @_;
-            handle_tweet($tweet, $dbh, $mention_sth,$keyword_sth,$url_sth);
+            handle_tweet(
+                tweet              => $tweet,
+                dbh                => $dbh,
+                mention_sth        => $mention_sth,
+                keyword_insert_sth => $keyword_insert_sth,
+                keyword_select_sth => $keyword_select_sth,
+                url_insert_sth     => $url_insert_sth,
+                url_select_sth     => $url_select_sth,
+            );
         },
         on_keepalive => sub {
             warn "-- keepalive --\n";
@@ -85,15 +95,20 @@ sub get_config {
 }
 
 sub handle_tweet {
-    my ($tweet, $dbh, $mention_sth, $keyword_sth, $url_sth ) = @_;
+    my (%args) = @_;
+    my $tweet = $args{'tweet'};
+    my $dbh   = $args{'dbh'};
+
     return unless $tweet->{'user'}->{'screen_name'};
     return unless $tweet->{'text'};
     return unless $tweet->{'text'} =~ m{http}i;
+
     my %keywords;
     foreach my $hashtag ( sort $tweet->{'text'} =~ m{#(\w+?)\b}g ) {
         next if $hashtag =~ m{^\d+$}; # Skip digits only
         $keywords{$hashtag} = 1;
     }
+
     my @urls;
     my $finder = URI::Find::UTF8->new(sub {
         my ($uri, $uri_str) = @_;
@@ -105,17 +120,26 @@ sub handle_tweet {
     $finder->find(\( $tweet->{'text'} ));
 
     my $timestamp = parse_date( $tweet->{'created_at'} );
+    my $user = $tweet->{'user'}->{'screen_name'};
+    my $name = $tweet->{'user'}->{'name'} || $user;
+
+    print "ID:            ", $tweet->{'id'}, "\n";
+    print "TIMESTAMP:     ", $timestamp, "\n";
+    print "NAME:          ", $name, "\n";
 
     foreach my $url ( sort @urls ) {
+
         my $url_id = new_uuid();
-        $url_sth->execute( $url_id, $url );
+        $args{'url_insert_sth'}->execute( $url_id, $url, $url->host, $tweet->{'id'}, $timestamp, $name, $user );
         if ( $dbh->err ) {
             $dbh->rollback();
-            my $sth = $dbh->prepare("SELECT id FROM url WHERE url = ?");
-            $sth->execute($url);
-            ($url_id ) = $sth->fetchrow_array();
+
+            $args{'url_select_sth'}->execute($url);
+            ($url_id ) = $args{'url_select_sth'}->fetchrow_array();
             if ( $dbh->err ) {
+                print "Fetching url.id failed: ", $dbh->errstr, "\n";
                 $dbh->rollback();
+                undef $url_id;
             }
             else {
                 $dbh->commit;
@@ -125,72 +149,60 @@ sub handle_tweet {
             $dbh->commit();
         }
         next unless $url_id; # Skip if wrong stuff happened
-        if ( keys %keywords > 0 ) {
-            foreach my $keyword ( sort keys %keywords ) {
-                $keyword = lc $keyword;
-                my $keyword_id = new_uuid();
-                $keyword_sth->execute( $keyword_id, $keyword );
-                if ( $dbh->err ) {
-                    $dbh->rollback();
-                    my $sth = $dbh->prepare("SELECT id FROM keyword WHERE keyword = ?");
-                    $sth->execute($keyword);
-                    ($keyword_id) = $sth->fetchrow_array();
-                    if ( $dbh->err ) {
-                        $dbh->rollback();
-                    }
-                    else {
-                        $dbh->commit;
-                    }
-                }
-                else {
-                    $dbh->commit();
-                }
-                next unless $keyword_id; # Skip if wrong stuff happened
-                print "ID:            ", $tweet->{'id'}, "\n";
-                print "TIMESTAMP:     ", $timestamp, "\n";
-                print "NAME:          ", $tweet->{'user'}->{'name'}, "\n";
-                print "KEYWORD:       ", $keyword, "\n";
-                print "KEYWORD ID:    ", $keyword_id, "\n";
-                print "URL:           ", $url, "\n";
-                print "URL ID:        ", $url_id, "\n";
-                $mention_sth->execute(
-                    $tweet->{'id'},
-                    $timestamp,
-                    $tweet->{'user'}->{'name'},
-                    $url_id,
-                    $keyword_id,
-                );
-                if ( $dbh->err ) {
-                    $dbh->rollback();
-                }
-                else {
-                    $dbh->commit();
-                }
-                print "-" x 79, "\n";
-            }
+
+        $args{'mention_sth'}->execute( new_uuid(), $timestamp, $url_id, undef );
+        if ( $dbh->err ) {
+            print "Storing mention of $url failed: ", $dbh->errstr, "\n";
+            $dbh->rollback();
+            next; # Skip to next URL if bad stuff happened
         }
         else {
-            print "ID:            ", $tweet->{'id'}, "\n";
-            print "TIMESTAMP:     ", $timestamp, "\n";
-            print "NAME:          ", $tweet->{'user'}->{'name'}, "\n";
-            print "URL:           ", $url, "\n";
-            print "URL ID:        ", $url_id, "\n";
-            $mention_sth->execute(
-                $tweet->{'id'},
+            $dbh->commit();
+        }
+        print "URL:           ", $url, "\n";
+        print "URL ID:        ", $url_id, "\n";
+
+        foreach my $keyword ( sort keys %keywords ) {
+            $keyword = lc $keyword;
+            my $keyword_id = new_uuid();
+            $args{'keyword_insert_sth'}->execute( $keyword_id, $keyword );
+            if ( $dbh->err ) {
+                $dbh->rollback();
+                $args{'keyword_select_sth'}->execute($keyword);
+                ($keyword_id) = $args{'keyword_select_sth'}->fetchrow_array();
+                if ( $dbh->err ) {
+                    print "Fetching keyword.id failed: ", $dbh->errstr, "\n";
+                    $dbh->rollback();
+                    undef $keyword_id;
+                }
+                else {
+                    $dbh->commit;
+                }
+            }
+            else {
+                $dbh->commit();
+            }
+            next unless $keyword_id; # Skip if wrong stuff happened
+
+            print "KEYWORD:       ", $keyword, "\n";
+            print "KEYWORD ID:    ", $keyword_id, "\n";
+
+            $args{'mention_sth'}->execute(
+                new_uuid(),
                 $timestamp,
-                $tweet->{'user'}->{'name'},
                 $url_id,
-                undef,
+                $keyword_id,
             );
             if ( $dbh->err ) {
+                print "Storing URL => keyword map failed: ", $dbh->errstr, "\n";
                 $dbh->rollback();
             }
             else {
                 $dbh->commit();
             }
-            print "-" x 79, "\n";
         }
     }
+    print "-" x 79, "\n";
 }
 
 sub parse_date {
