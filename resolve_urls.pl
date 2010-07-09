@@ -28,13 +28,32 @@ sub run {
 
     my $pid = $$; # Key by process id
 
+    my $mention_select_sth = $dbh->prepare('SELECT * FROM mention WHERE verifier_process_id = ? ORDER BY mention_at DESC LIMIT 1');
+    my $mention_lock_sth = $dbh->prepare('UPDATE mention SET verifier_process_id = ? WHERE url_id = ( SELECT url_id FROM mention WHERE verifier_process_id = 0 ORDER BY mention_at DESC LIMIT 1 )');
+    my $mention_unlock_sth = $dbh->prepare('UPDATE mention SET verifier_process_id = 0 WHERE verifier_process_id = ?');
+
     my $url_select_sth = $dbh->prepare('SELECT * FROM url WHERE is_verified = FALSE AND verifier_process_id = ? ORDER BY first_mention_at DESC LIMIT 1');
-    my $url_update_sth = $dbh->prepare('UPDATE url SET verifier_process_id = ? WHERE id = (SELECT id FROM url WHERE is_verified = FALSE AND verifier_process_id = 0 ORDER BY first_mention_at DESC LIMIT 1)');
-    my $url_reset_sth = $dbh->prepare('UPDATE url SET verifier_process_id = 0 WHERE id = ?');
+    my $url_lock_sth = $dbh->prepare('UPDATE url SET verifier_process_id = ? WHERE id = ? AND verifier_process_id = 0');
+    my $url_unlock_sth = $dbh->prepare('UPDATE url SET verifier_process_id = 0 WHERE verifier_process_id = ?');
 
     while( 1 ) {
-        # Set lock on record
-        $url_update_sth->execute($pid);
+        # Set lock on mention record
+        $mention_lock_sth->execute($pid);
+        if ( $dbh->err ) {
+            $dbh->rollback();
+        }
+        else {
+            $dbh->commit();
+        }
+        $mention_select_sth->execute($pid);
+        my $mention_row = $mention_select_sth->fetchrow_hashref();
+        unless ( ref($mention_row) eq 'HASH' and keys %$mention_row > 0 ) {
+            $mention_unlock_sth->execute($pid);
+            next; # Nothing found, so skip it
+        }
+
+        # Set lock on url record
+        $url_lock_sth->execute($pid, $mention_row->{'url_id'} );
         if ( $dbh->err ) {
             $dbh->rollback();
         }
@@ -48,14 +67,16 @@ sub run {
         if ( ref($url_row) eq 'HASH' and keys %$url_row > 0 ) {
             handle_url( $dbh, $url_row );
 
-            # Reset "lock" on record
-            $url_reset_sth->execute( $url_row->{'id'} );
+            # Reset "lock" on url and mention record(s)
+            $url_unlock_sth->execute( $pid );
+            $mention_unlock_sth->execute( $pid );
             if ( $dbh->err ) {
                 $dbh->rollback();
             }
             else {
                 $dbh->commit();
             }
+
             print "-" x 79, "\n";
         }
         else {
