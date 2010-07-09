@@ -26,41 +26,50 @@ sub run {
     die("Can't connect to database") unless $dbh;
     $dbh->{'pg_enable_utf8'} = 1; # Return data from DB already decoded
 
-    my $mention_select_sth = $dbh->prepare(<<'EOM');
-SELECT id, mention_at, url_id, keyword_id
-FROM mention
-ORDER BY mention_at DESC
-LIMIT 1
-EOM
+    my $pid = $$; # Key by process id
+
+    my $url_select_sth = $dbh->prepare('SELECT * FROM url WHERE is_verified = FALSE AND verifier_process_id = ? ORDER BY first_mention_at DESC LIMIT 1');
+    my $url_update_sth = $dbh->prepare('UPDATE url SET verifier_process_id = ? WHERE id = (SELECT id FROM url WHERE is_verified = FALSE AND verifier_process_id = 0 ORDER BY first_mention_at DESC LIMIT 1)');
+    my $url_reset_sth = $dbh->prepare('UPDATE url SET verifier_process_id = 0 WHERE id = ?');
 
     while( 1 ) {
-        $mention_select_sth->execute();
-        my $mention_row = $mention_select_sth->fetchrow_hashref();
-        if ( ref($mention_row) eq 'HASH' and keys %$mention_row > 0 ) {
-            handle_mention( $dbh, $mention_row );
+        # Set lock on record
+        $url_update_sth->execute($pid);
+        if ( $dbh->err ) {
+            $dbh->rollback();
+        }
+        else {
+            $dbh->commit();
+        }
+
+        # Fetch record according to pid
+        $url_select_sth->execute($pid);
+        my $url_row = $url_select_sth->fetchrow_hashref();
+        if ( ref($url_row) eq 'HASH' and keys %$url_row > 0 ) {
+            handle_url( $dbh, $url_row );
+
+            # Reset "lock" on record
+            $url_reset_sth->execute( $url_row->{'id'} );
+            if ( $dbh->err ) {
+                $dbh->rollback();
+            }
+            else {
+                $dbh->commit();
+            }
             print "-" x 79, "\n";
         }
         else {
             print "Sleeping...\n";
             sleep(1);
         }
+
     }
 
     print "Exiting...\n";
 }
 
-sub handle_mention {
-    my ($dbh, $mention_row) = @_;
-
-    my $sth = $dbh->prepare("SELECT * FROM url WHERE id = ?");
-    $sth->execute( $mention_row->{'url_id'} );
-    my $url_row = $sth->fetchrow_hashref();
-
-    # Verify that URL record exists (sanity check)
-    unless ( ref($url_row) eq 'HASH' and keys %$url_row > 0 ) {
-        print "No URL record found for url_id '" . $mention_row->{'url_id'} . "'\n";
-        return;
-    }
+sub handle_url {
+    my ($dbh, $url_row) = @_;
 
     # Verify URL and update record ( in memory update as well )
     unless ( $url_row->{'is_verified'} ) {
@@ -73,7 +82,21 @@ sub handle_mention {
         return;
     }
 
-    store_mention( $dbh, $mention_row, $url_row );
+    # Fetch all mentions of this URL
+    # NB: We store all records in memory because we're going to break the
+    # transaction in store_mention()
+    my $sth = $dbh->prepare("SELECT * FROM mention WHERE url_id = ?");
+    $sth->execute( $url_row->{'id'} );
+    my @mentions;
+    while ( my $mention = $sth->fetchrow_hashref() ) {
+        push @mentions, $mention;
+    }
+
+    # Store (and remove) mention
+    foreach my $mention_row ( @mentions ) {
+        store_mention( $dbh, $mention_row, $url_row );
+    }
+
     return;
 }
 
