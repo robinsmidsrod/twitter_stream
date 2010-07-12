@@ -49,6 +49,8 @@ sub run {
         my $mention_row = $mention_select_sth->fetchrow_hashref();
         unless ( ref($mention_row) eq 'HASH' and keys %$mention_row > 0 ) {
             $mention_unlock_sth->execute($pid);
+            print "Sleeping (no mention found)...\n";
+            sleep(1);
             next; # Nothing found, so skip it
         }
 
@@ -80,7 +82,7 @@ sub run {
             print "-" x 79, "\n";
         }
         else {
-            print "Sleeping...\n";
+            print "Sleeping (no url found)...\n";
             sleep(1);
         }
 

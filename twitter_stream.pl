@@ -15,20 +15,48 @@ use Data::UUID ();
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
 
-my $done = AnyEvent->condvar;
-my $stream = init_stream($done, @ARGV);
-$done->recv();
+#track => 'perl,java,python,ruby,rails,bash,linux,windows,freebsd,solaris,nexenta,openbsd,opensolaris,windows7', #,html,css,javascript,flickr,smugsmug,photo,photography,camera,canon,nikon,sony,pentax,picture,image,hdr',
+
+my @keywords = @ARGV;
+
+unless ( scalar @keywords ) {
+    print "No keywords specified, terminating...\n";
+    exit;
+}
+
+run(@keywords);
+
 exit;
 
 ############################################
 
+sub run {
+    my (@keywords) = @_;
+    my $timeout = 1;
+    while ( 1 ) {
+        last if $timeout >= 960; # Exit if more than 16 minutes has passed
+        print "Sleeping $timeout second(s) before connecting to Twitter stream...\n";
+        sleep($timeout);
+        eval {
+            my $done = AnyEvent->condvar;
+            my $stream = init_stream($done, \$timeout, @keywords);
+            $done->recv();
+        };
+        if ($@) {
+            warn("Twitter connection gave error: $@");
+        }
+        $timeout *= 2;
+    }
+    print "Exiting because of timeout...\n";
+}
+
 sub init_stream {
-    my ($done, $username, $password) = @_;
+    my ($done, $timeout_ref, @keywords) = @_;
 
     my $config_file = get_config_file();
     my $config = get_config($config_file);
-    $username ||= $config->{'global'}->{'username'};
-    $password ||= $config->{'global'}->{'password'};
+    my $username = $ENV{'TWITTER_STREAM_USERNAME'} || $config->{'global'}->{'username'};
+    my $password = $ENV{'TWITTER_STREAM_PASSWORD'} || $config->{'global'}->{'password'};
 
     unless ( $username and $password ) {
         die("Please specify your Twitter username and password on command line or in '$config_file'.\n");
@@ -46,28 +74,36 @@ sub init_stream {
     return AnyEvent::Twitter::Stream->new(
         username => $username,
         password => $password,
-        method => 'sample',
+        method   => 'filter',
+        track    => join(",", @keywords),
         on_tweet => sub {
             my ($tweet) = @_;
-            handle_tweet(
-                tweet              => $tweet,
-                dbh                => $dbh,
-                mention_sth        => $mention_sth,
-                keyword_insert_sth => $keyword_insert_sth,
-                keyword_select_sth => $keyword_select_sth,
-                url_insert_sth     => $url_insert_sth,
-                url_select_sth     => $url_select_sth,
-            );
+            eval {
+                handle_tweet(
+                    tweet              => $tweet,
+                    dbh                => $dbh,
+                    mention_sth        => $mention_sth,
+                    keyword_insert_sth => $keyword_insert_sth,
+                    keyword_select_sth => $keyword_select_sth,
+                    url_insert_sth     => $url_insert_sth,
+                    url_select_sth     => $url_select_sth,
+                );
+            };
+            if ($@) {
+                warn("Error handling tweet...\n");
+            }
+            $$timeout_ref = 1; # Reset timeout counter
         },
         on_keepalive => sub {
             warn "-- keepalive --\n";
+            $$timeout_ref = 1; # Reset timeout counter
         },
         on_error => sub {
             my ($error) = @_;
-            warn "ERROR: $error";
+            warn "ERROR: $error\n";
             $done->send;
         },
-        on_eof   => sub {
+        on_eof => sub {
             $done->send;
         },
         timeout => 45,
