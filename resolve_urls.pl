@@ -25,6 +25,7 @@ sub run {
     my $dbh = DBI->connect('dbi:Pg:dbname=twitter_stream', "", "", { AutoCommit => 0 } );
     die("Can't connect to database") unless $dbh;
     $dbh->{'pg_enable_utf8'} = 1; # Return data from DB already decoded
+    $dbh->{'PrintError'} = 0; # Silence database warnings
 
     my $pid = $$; # Key by process id
 
@@ -32,7 +33,7 @@ sub run {
     my $mention_lock_sth = $dbh->prepare('UPDATE mention SET verifier_process_id = ? WHERE url_id = ( SELECT url_id FROM mention WHERE verifier_process_id = 0 ORDER BY mention_at DESC LIMIT 1 )');
     my $mention_unlock_sth = $dbh->prepare('UPDATE mention SET verifier_process_id = 0 WHERE verifier_process_id = ?');
 
-    my $url_select_sth = $dbh->prepare('SELECT * FROM url WHERE is_verified = FALSE AND verifier_process_id = ? ORDER BY first_mention_at DESC LIMIT 1');
+    my $url_select_sth = $dbh->prepare('SELECT * FROM url WHERE verifier_process_id = ? AND id = ?');
     my $url_lock_sth = $dbh->prepare('UPDATE url SET verifier_process_id = ? WHERE id = ? AND verifier_process_id = 0');
     my $url_unlock_sth = $dbh->prepare('UPDATE url SET verifier_process_id = 0 WHERE verifier_process_id = ?');
 
@@ -55,7 +56,7 @@ sub run {
         }
 
         # Set lock on url record
-        $url_lock_sth->execute($pid, $mention_row->{'url_id'} );
+        $url_lock_sth->execute( $pid, $mention_row->{'url_id'} );
         if ( $dbh->err ) {
             $dbh->rollback();
         }
@@ -64,7 +65,7 @@ sub run {
         }
 
         # Fetch record according to pid
-        $url_select_sth->execute($pid);
+        $url_select_sth->execute( $pid, $mention_row->{'url_id'} );
         my $url_row = $url_select_sth->fetchrow_hashref();
         if ( ref($url_row) eq 'HASH' and keys %$url_row > 0 ) {
             handle_url( $dbh, $url_row );
@@ -196,6 +197,7 @@ sub verify_url {
     $content_type = (split(/;/, $content_type, 2))[0];
 
     my $url = $res->request->uri;
+    $url->path('') if $url->path eq '/'; # Strip trailing slash for root path
 
     my $title = $content;
     my $encoding_from = "";
