@@ -64,8 +64,9 @@ sub init_stream {
 
     my $dbh = DBI->connect('dbi:Pg:dbname=twitter_stream', "", "", { AutoCommit => 0 } );
     die("Can't connect to database") unless $dbh;
+    $dbh->{'PrintError'} = 0;
 
-    my $mention_sth        = $dbh->prepare("INSERT INTO mention (id, mention_at, url_id, keyword_id) VALUES (?,?,?,?)");
+    my $mention_insert_sth = $dbh->prepare("INSERT INTO mention (id, mention_at, url_id, keyword_id) VALUES (?,?,?,?)");
     my $keyword_insert_sth = $dbh->prepare("INSERT INTO keyword (id, keyword) VALUES (?,?)");
     my $keyword_select_sth = $dbh->prepare("SELECT id FROM keyword WHERE keyword = ?");
     my $url_insert_sth     = $dbh->prepare("INSERT INTO url (id, url, host, first_mention_id, first_mention_at, first_mention_by_name, first_mention_by_user) VALUES (?,?,?,?,?,?,?)");
@@ -82,7 +83,7 @@ sub init_stream {
                 handle_tweet(
                     tweet              => $tweet,
                     dbh                => $dbh,
-                    mention_sth        => $mention_sth,
+                    mention_insert_sth => $mention_insert_sth,
                     keyword_insert_sth => $keyword_insert_sth,
                     keyword_select_sth => $keyword_select_sth,
                     url_insert_sth     => $url_insert_sth,
@@ -90,7 +91,7 @@ sub init_stream {
                 );
             };
             if ($@) {
-                warn("Error handling tweet...\n");
+                warn("Error handling tweet: $@\n");
             }
             $$timeout_ref = 1; # Reset timeout counter
         },
@@ -151,6 +152,7 @@ sub handle_tweet {
         return unless $uri->scheme =~ m{^(?:ftp|http|https)$}; # We just care about HTTP(S) and FTP
         return unless $uri->host; # Skip URLs without hostname part
         return unless $uri->host =~ m{\.\w{2,}$}; # Need at least one dot + two (or more) word chars at the end of the hostname
+        $uri->path('') if $uri->path eq '/'; # Strip trailing slash for root path
         push @urls, $uri;
     });
     $finder->find(\( $tweet->{'text'} ));
@@ -165,79 +167,80 @@ sub handle_tweet {
 
     foreach my $url ( sort @urls ) {
 
+        print "URL:           ", $url, "\n";
+        $dbh->pg_savepoint('url_insert');
+
         my $url_id = new_uuid();
         $args{'url_insert_sth'}->execute( $url_id, $url, $url->host, $tweet->{'id'}, $timestamp, $name, $user );
         if ( $dbh->err ) {
-            $dbh->rollback();
-
+            $dbh->pg_rollback_to('url_insert');
             $args{'url_select_sth'}->execute($url);
-            ($url_id ) = $args{'url_select_sth'}->fetchrow_array();
-            if ( $dbh->err ) {
-                print "Fetching url.id failed: ", $dbh->errstr, "\n";
-                $dbh->rollback();
-                undef $url_id;
-            }
-            else {
-                $dbh->commit;
-            }
+            ($url_id) = $args{'url_select_sth'}->fetchrow_array();
         }
-        else {
-            $dbh->commit();
+        # If we couldn't resolve url_id, rollback (which basically means skip)
+        unless ( $url_id ) {
+            print "Unable to resolve id for '$url'\n";
+            $dbh->pg_rollback_to('url_insert');
+            next;
         }
-        next unless $url_id; # Skip if wrong stuff happened
+        print "URL ID:        ", $url_id, "\n";
 
-        $args{'mention_sth'}->execute( new_uuid(), $timestamp, $url_id, undef );
+        $args{'mention_insert_sth'}->execute(
+            new_uuid(),
+            $timestamp,
+            $url_id,
+            undef, # no keyword specified
+        );
+
         if ( $dbh->err ) {
-            print "Storing mention of $url failed: ", $dbh->errstr, "\n";
-            $dbh->rollback();
+            print "Storing mention of '$url' failed: ", $dbh->errstr, "\n";
+            $dbh->pg_rollback_to('url_insert');
             next; # Skip to next URL if bad stuff happened
         }
-        else {
-            $dbh->commit();
-        }
-        print "URL:           ", $url, "\n";
-        print "URL ID:        ", $url_id, "\n";
 
         foreach my $keyword ( sort keys %keywords ) {
             $keyword = lc $keyword;
+
+            print "KEYWORD:       ", $keyword, "\n";
+            $dbh->pg_savepoint('keyword_insert');
+
             my $keyword_id = new_uuid();
             $args{'keyword_insert_sth'}->execute( $keyword_id, $keyword );
             if ( $dbh->err ) {
-                $dbh->rollback();
+                $dbh->pg_rollback_to('keyword_insert');
                 $args{'keyword_select_sth'}->execute($keyword);
                 ($keyword_id) = $args{'keyword_select_sth'}->fetchrow_array();
-                if ( $dbh->err ) {
-                    print "Fetching keyword.id failed: ", $dbh->errstr, "\n";
-                    $dbh->rollback();
-                    undef $keyword_id;
-                }
-                else {
-                    $dbh->commit;
-                }
             }
-            else {
-                $dbh->commit();
+            # If we couldn't resolve keyword id, skip this keyword
+            unless ( $keyword_id ) {
+                $dbh->pg_rollback_to('keyword_insert');
+                next;
             }
-            next unless $keyword_id; # Skip if wrong stuff happened
-
-            print "KEYWORD:       ", $keyword, "\n";
             print "KEYWORD ID:    ", $keyword_id, "\n";
 
-            $args{'mention_sth'}->execute(
+            $args{'mention_insert_sth'}->execute(
                 new_uuid(),
                 $timestamp,
                 $url_id,
                 $keyword_id,
             );
             if ( $dbh->err ) {
-                print "Storing URL => keyword map failed: ", $dbh->errstr, "\n";
-                $dbh->rollback();
-            }
-            else {
-                $dbh->commit();
+                print "Inserting mention of '$url' with keyword '$keyword' failed: ", $dbh->errstr, "\n";
+                $dbh->pg_rollback_to('keyword_insert');
+                next;
             }
         }
     }
+
+    # Check that everything went well
+    if ( $dbh->err ) {
+        print "Storing mentions of urls in tweet failed: ", $dbh->errstr, "\n";
+        $dbh->rollback();
+    }
+    else {
+        $dbh->commit();
+    }
+
     print "-" x 79, "\n";
 }
 
