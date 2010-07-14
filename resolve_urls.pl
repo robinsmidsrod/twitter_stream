@@ -41,27 +41,27 @@ sub run {
     while( 1 ) {
         # Lock mention/url table to set verifier_process_id
         $dbh->do("LOCK TABLE mention, url IN EXCLUSIVE MODE");
-        if ( $dbh->err ) {
-            $dbh->rollback();
-            next;
-        }
+#        if ( $dbh->err ) {
+#            $dbh->rollback();
+#            next;
+#        }
 
         # Tag mention records with this process' pid
         $mention_lock_sth->execute($pid);
-        if ( $dbh->err ) {
-            $dbh->rollback();
-            next;
-        }
+#        if ( $dbh->err ) {
+#            $dbh->rollback();
+#            next;
+#        }
         $mention_select_sth->execute($pid);
-        if ( $dbh->err ) {
-            $dbh->rollback();
-            next;
-        }
+#        if ( $dbh->err ) {
+#            $dbh->rollback();
+#            next;
+#        }
         my $mention_row = $mention_select_sth->fetchrow_hashref();
-        if ( $dbh->err ) {
-            $dbh->rollback();
-            next;
-        }
+#        if ( $dbh->err ) {
+#            $dbh->rollback();
+#            next;
+#        }
         unless ( ref($mention_row) eq 'HASH' and keys %$mention_row > 0 ) {
             $dbh->rollback(); # No record found, abort work (will release exclusive locks)
             print "Sleeping (no mention found)...\n";
@@ -82,15 +82,15 @@ sub run {
 
         # Fetch record according to pid
         $url_select_sth->execute( $pid, $mention_row->{'url_id'} );
-        if ( $dbh->err ) {
-            $dbh->rollback();
-            next;
-        }
+ #       if ( $dbh->err ) {
+ #           $dbh->rollback();
+ #           next;
+ #       }
         my $url_row = $url_select_sth->fetchrow_hashref();
-        if ( $dbh->err ) {
-            $dbh->rollback();
-            next;
-        }
+ #       if ( $dbh->err ) {
+ #           $dbh->rollback();
+ #           next;
+ #       }
         unless ( ref($url_row) eq 'HASH' and keys %$url_row > 0 ) {
             $dbh->rollback(); # No record found, abort work
             print "Sleeping (no url found)...\n";
