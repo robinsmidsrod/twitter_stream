@@ -7,7 +7,8 @@ use LWP::UserAgent ();
 use Encode ();
 use HTML::Encoding ();
 use HTML::Entities ();
-use DBI ();
+use DBI qw(:sql_types);
+use DBD::Pg qw(:pg_types);
 use Parallel::Iterator ();
 use Data::UUID ();
 
@@ -38,54 +39,80 @@ sub run {
     my $url_unlock_sth = $dbh->prepare('UPDATE url SET verifier_process_id = 0 WHERE verifier_process_id = ?');
 
     while( 1 ) {
-        # Set lock on mention record
+        # Lock mention/url table to set verifier_process_id
+        $dbh->do("LOCK TABLE mention, url IN EXCLUSIVE MODE");
+        if ( $dbh->err ) {
+            $dbh->rollback();
+            next;
+        }
+
+        # Tag mention records with this process' pid
         $mention_lock_sth->execute($pid);
         if ( $dbh->err ) {
             $dbh->rollback();
-        }
-        else {
-            $dbh->commit();
+            next;
         }
         $mention_select_sth->execute($pid);
+        if ( $dbh->err ) {
+            $dbh->rollback();
+            next;
+        }
         my $mention_row = $mention_select_sth->fetchrow_hashref();
+        if ( $dbh->err ) {
+            $dbh->rollback();
+            next;
+        }
         unless ( ref($mention_row) eq 'HASH' and keys %$mention_row > 0 ) {
-            $mention_unlock_sth->execute($pid);
+            $dbh->rollback(); # No record found, abort work (will release exclusive locks)
             print "Sleeping (no mention found)...\n";
             sleep(1);
             next; # Nothing found, so skip it
         }
 
-        # Set lock on url record
+        # Tag url record with this process' pid
         $url_lock_sth->execute( $pid, $mention_row->{'url_id'} );
         if ( $dbh->err ) {
+            print "Error while tagging 'url' record: ", $dbh->errstr, "\n";
+            $dbh->rollback(); # Will release exclusive lock
+            next;
+        }
+        else {
+            $dbh->commit(); # Will also release exclusive lock
+        }
+
+        # Fetch record according to pid
+        $url_select_sth->execute( $pid, $mention_row->{'url_id'} );
+        if ( $dbh->err ) {
+            $dbh->rollback();
+            next;
+        }
+        my $url_row = $url_select_sth->fetchrow_hashref();
+        if ( $dbh->err ) {
+            $dbh->rollback();
+            next;
+        }
+        unless ( ref($url_row) eq 'HASH' and keys %$url_row > 0 ) {
+            $dbh->rollback(); # No record found, abort work
+            print "Sleeping (no url found)...\n";
+            sleep(1);
+            next;
+        }
+
+        # Do work with url record
+        handle_url( $dbh, $url_row );
+
+        # Reset "lock" on url and mention record(s)
+        $url_unlock_sth->execute( $pid );
+        $mention_unlock_sth->execute( $pid );
+        if ( $dbh->err ) {
+            print "Database error occured: ", $dbh->errstr, "\n";
             $dbh->rollback();
         }
         else {
             $dbh->commit();
         }
 
-        # Fetch record according to pid
-        $url_select_sth->execute( $pid, $mention_row->{'url_id'} );
-        my $url_row = $url_select_sth->fetchrow_hashref();
-        if ( ref($url_row) eq 'HASH' and keys %$url_row > 0 ) {
-            handle_url( $dbh, $url_row );
-
-            # Reset "lock" on url and mention record(s)
-            $url_unlock_sth->execute( $pid );
-            $mention_unlock_sth->execute( $pid );
-            if ( $dbh->err ) {
-                $dbh->rollback();
-            }
-            else {
-                $dbh->commit();
-            }
-
-            print "-" x 79, "\n";
-        }
-        else {
-            print "Sleeping (no url found)...\n";
-            sleep(1);
-        }
+        print "-" x 79, "\n";
 
     }
 
@@ -101,23 +128,27 @@ sub handle_url {
     }
 
     # If verification failed for some reason, bail out
-    if ( $url_row->{'verify_failed'} ) {
-        print "Verify (has) failed for '" . $url_row->{'url'} . "!\n";
+    unless ( $url_row->{'verified_url_id'} ) {
+        print "URL '" . $url_row->{'url'} . "' not yet resolved successfully!\n";
         return;
     }
 
-    # Fetch all mentions of this URL
-    # NB: We store all records in memory because we're going to break the
-    # transaction in store_mention()
-    my $sth = $dbh->prepare("SELECT * FROM mention WHERE url_id = ?");
-    $sth->execute( $url_row->{'id'} );
-    my @mentions;
-    while ( my $mention = $sth->fetchrow_hashref() ) {
-        push @mentions, $mention;
-    }
+    $dbh->pg_savepoint("handle_url");
 
-    # Store (and remove) mention
-    foreach my $mention_row ( @mentions ) {
+    # Fetch all mentions of this URL and store (and remove) mention
+    my $sth = $dbh->prepare("SELECT * FROM mention WHERE verifier_process_id = ? AND url_id = ?");
+    $sth->execute( $$, $url_row->{'id'} );
+    if ( $dbh->err ) {
+        print "Database error occured: ", $dbh->errstr, "\n";
+        $dbh->pg_rollback_to("handle_url");
+        return;
+    }
+    while ( my $mention_row = $sth->fetchrow_hashref() ) {
+        if ( $dbh->err ) {
+            print "Database error occured: ", $dbh->errstr, "\n";
+            $dbh->pg_rollback_to("handle_url");
+            return;
+        }
         store_mention( $dbh, $mention_row, $url_row );
     }
 
@@ -128,6 +159,8 @@ sub verify_url {
     my ( $dbh, $url_row ) = @_;
 
     print "Verifying URL: " . $url_row->{'url'} . "\n";
+
+    $dbh->pg_savepoint("verify_url");
 
     my $ua = LWP::UserAgent->new();
     # Let's lie about who we are, because sites like Facebook won't give us anything useful unless we do
@@ -164,10 +197,8 @@ sub verify_url {
         my $sth = $dbh->prepare("UPDATE url SET is_verified=TRUE, verify_failed=TRUE, verified_at=current_timestamp, verified_url_id=NULL WHERE id = ?");
         $sth->execute( $url_row->{'id'} );
         if ( $dbh->err ) {
-            $dbh->rollback();
-        }
-        else {
-            $dbh->commit();
+            print "Database error occured: ", $dbh->errstr, "\n";
+            $dbh->pg_rollback_to("verify_url");
         }
         return;
     }
@@ -184,10 +215,8 @@ sub verify_url {
         my $sth = $dbh->prepare("UPDATE url SET is_verified=TRUE, verify_failed=TRUE, verified_at=current_timestamp, verified_url_id=NULL WHERE id = ?");
         $sth->execute( $url_row->{'id'} );
         if ( $dbh->err ) {
-            $dbh->rollback();
-        }
-        else {
-            $dbh->commit();
+            print "Database error occured: ", $dbh->errstr, "\n";
+            $dbh->pg_rollback_to("verify_url");
         }
         return;
     }
@@ -228,6 +257,8 @@ sub verify_url {
         $title = undef;
     }
 
+    $dbh->pg_savepoint("insert_verified_url");
+
     # Create verified_url record with $url, $content_type and $title + $url_row data
     my $verified_url_sth = $dbh->prepare(<<'EOM');
 INSERT INTO verified_url (id, url, verified_at,       content_type, title, first_mention_id, first_mention_at, first_mention_by_name, first_mention_by_user)
@@ -235,31 +266,33 @@ VALUES                   (?,  ?,   current_timestamp, ?,            ?,     ?,   
 EOM
 
     my $verified_url_id = new_uuid();
-    $verified_url_sth->execute(
-        $verified_url_id,
-        $url,
-        substr( $content_type, 0, 50 ),
-        ( defined($title) ? Encode::encode_utf8($title) : undef ),
-        $url_row->{'first_mention_id'},
-        $url_row->{'first_mention_at'},
-        $url_row->{'first_mention_by_name'},
-        $url_row->{'first_mention_by_user'},
-    );
+    $verified_url_sth->bind_param(1, $verified_url_id, { pg_type => PG_UUID });
+    $verified_url_sth->bind_param(2, $url); # VARCHAR
+    $verified_url_sth->bind_param(3, substr( $content_type, 0, 50 ) ); # VARCHAR
+    $verified_url_sth->bind_param(4, defined($title) ? Encode::encode_utf8($title) : undef ); # VARCHAR
+    $verified_url_sth->bind_param(5, $url_row->{'first_mention_id'}, { pg_type => PG_INT8 } );
+    $verified_url_sth->bind_param(6, $url_row->{'first_mention_at'}, { pg_type => PG_TIMESTAMPTZ } );
+    $verified_url_sth->bind_param(7, $url_row->{'first_mention_by_name'} ); # VARCHAR
+    $verified_url_sth->bind_param(8, $url_row->{'first_mention_by_user'} ); # VARCHAR
+    $verified_url_sth->execute();
+#        $verified_url_id,
+#        $url,
+#        substr( $content_type, 0, 50 ),
+#        ( defined($title) ? Encode::encode_utf8($title) : undef ),
+#        $url_row->{'first_mention_id'},
+#        $url_row->{'first_mention_at'},
+#        $url_row->{'first_mention_by_name'},
+#        $url_row->{'first_mention_by_user'},
+#    );
     if ( $dbh->err ) {
-        $dbh->rollback();
+        $dbh->pg_rollback_to("insert_verified_url");
         my $sth = $dbh->prepare("SELECT id FROM verified_url WHERE url = ?");
         $sth->execute($url);
         ($verified_url_id) = $sth->fetchrow_array();
         if ( $dbh->err ) {
-            $dbh->rollback();
-            undef $verified_url_id;
+            print "Database error occured: ", $dbh->errstr, "\n";
+            $dbh->pg_rollback_to("insert_verified_url");
         }
-        else {
-            $dbh->commit();
-        }
-    }
-    else {
-        $dbh->commit();
     }
     unless ( $verified_url_id ) {
         # Storing the verified URL failed in some way, signal failure
@@ -273,12 +306,9 @@ EOM
         my $sth = $dbh->prepare("UPDATE url SET is_verified=TRUE, verify_failed=TRUE, verified_at=current_timestamp, verified_url_id=NULL WHERE id = ?");
         $sth->execute( $url_row->{'id'} );
         if ( $dbh->err ) {
-            $dbh->rollback();
+            print "Database error occured: ", $dbh->errstr, "\n";
+            $dbh->pg_rollback_to("verify_url");
         }
-        else {
-            $dbh->commit();
-        }
-
         return;
     }
 
@@ -289,10 +319,8 @@ EOM
         $url_row->{'id'}
     );
     if ( $dbh->err ) {
-        $dbh->rollback();
-    }
-    else {
-        $dbh->commit();
+        print "Database error occured: ", $dbh->errstr, "\n";
+        $dbh->pg_rollback_to("verify_url");
     }
 
     # Inform caller about result
@@ -313,14 +341,17 @@ sub store_mention {
 
     print "Storing mention of " . $url_row->{'verified_url_id'} . "\n";
 
-    my @precision = ( 'day', 'week', 'month', 'year' );
+    $dbh->pg_savepoint("store_mention");
 
-    my $fail = 0;
+    my $mention_delete_sth = $dbh->prepare("DELETE FROM mention WHERE id = ?");
+
+    my @precision = ( 'day', 'week', 'month', 'year' );
 
     if ( $mention_row->{'keyword_id'} ) {
         # Create record in mention_day/week/month/year_keyword
-        print "    with keyword " . $mention_row->{'keyword_id'} . "\n";
+        print "      with keyword " . $mention_row->{'keyword_id'} . "\n";
         foreach my $precision ( @precision ) {
+            $dbh->pg_savepoint("insert_mention_keyword_$precision");
             my $sth = $dbh->prepare(<<"EOM");
 INSERT INTO mention_${precision}_keyword (mention_at, verified_url_id, keyword_id, mention_count)
 VALUES ( date_trunc('$precision', ?::date)::date, ?, ?, 1)
@@ -331,7 +362,7 @@ EOM
                 $mention_row->{'keyword_id'},
             );
             if ( $dbh->err ) {
-                $dbh->rollback();
+                $dbh->pg_rollback_to("insert_mention_keyword_$precision");
                 my $update_sth = $dbh->prepare(<<"EOM");
 UPDATE mention_${precision}_keyword SET mention_count = mention_count + 1
 WHERE mention_at = date_trunc('$precision', ?::date)::date AND verified_url_id = ? AND keyword_id = ?
@@ -342,67 +373,60 @@ EOM
                     $mention_row->{'keyword_id'},
                 );
                 if ( $dbh->err ) {
-                    $dbh->rollback();
-                    $fail = 1;
+                    print "Database error occured: ", $dbh->errstr, "\n";
+                    $dbh->pg_rollback_to("store_mention");
+                    return;
                 }
-                else {
-                    $dbh->commit();
-                }
-            }
-            else {
-                $dbh->commit();
             }
         }
+        # Delete mention record
+        $mention_delete_sth->execute( $mention_row->{'id'} );
+        if ( $dbh->err ) {
+            print "Database error occured: ", $dbh->errstr, "\n";
+            $dbh->pg_rollback_to("store_mention");
+            return;
+        }
+        print "Mention (with keyword) stored OK.\n";
+        return;
     }
-    else {
-        # Create record in mention_day/week/month/year
-        foreach my $precision ( @precision ) {
-            my $sth = $dbh->prepare(<<"EOM");
+
+    # Create record in mention_day/week/month/year
+    foreach my $precision ( @precision ) {
+        $dbh->pg_savepoint("insert_mention_$precision");
+        my $sth = $dbh->prepare(<<"EOM");
 INSERT INTO mention_${precision} (mention_at, verified_url_id, mention_count)
 VALUES ( date_trunc('$precision', ?::date)::date, ?, 1)
 EOM
-            $sth->execute(
+        $sth->execute(
+            $mention_row->{'mention_at'},
+            $url_row->{'verified_url_id'},
+        );
+        if ( $dbh->err ) {
+            $dbh->pg_rollback_to("insert_mention_$precision");
+            my $update_sth = $dbh->prepare(<<"EOM");
+UPDATE mention_${precision} SET mention_count = mention_count + 1
+WHERE mention_at = date_trunc('$precision', ?::date)::date AND verified_url_id = ?
+EOM
+            $update_sth->execute(
                 $mention_row->{'mention_at'},
                 $url_row->{'verified_url_id'},
             );
             if ( $dbh->err ) {
-                $dbh->rollback();
-                my $update_sth = $dbh->prepare(<<"EOM");
-UPDATE mention_${precision} SET mention_count = mention_count + 1
-WHERE mention_at = date_trunc('$precision', ?::date)::date AND verified_url_id = ?
-EOM
-                $update_sth->execute(
-                    $mention_row->{'mention_at'},
-                    $url_row->{'verified_url_id'},
-                );
-                if ( $dbh->err ) {
-                    $dbh->rollback();
-                    $fail = 1;
-                }
-                else {
-                    $dbh->commit();
-                }
-            }
-            else {
-                $dbh->commit();
+                print "Database error occured: ", $dbh->errstr, "\n";
+                $dbh->pg_rollback_to("store_mention");
+                return;
             }
         }
     }
-
-    # Delete mention if everything went ok
-    unless ( $fail ) {
-        my $delete_sth = $dbh->prepare("DELETE FROM mention WHERE id = ?");
-        $delete_sth->execute( $mention_row->{'id'} );
-        if ( $dbh->err ) {
-            $dbh->rollback();
-            print "Database error deleting mention " . $mention_row->{'id'} . "\n";
-        }
-        else {
-            $dbh->commit();
-            print "Mention stored OK\n";
-        }
+    # Delete mention record
+    $mention_delete_sth->execute( $mention_row->{'id'} );
+    if ( $dbh->err ) {
+        print "Database error occured: ", $dbh->errstr, "\n";
+        $dbh->pg_rollback_to("store_mention");
+        return;
     }
 
+    print "Mention stored OK.\n";
     return;
 }
 
