@@ -32,7 +32,8 @@ CREATE TABLE mention (
     id uuid NOT NULL,
     mention_at timestamp with time zone NOT NULL,
     url_id uuid NOT NULL,
-    keyword_id uuid
+    keyword_id uuid,
+    verifier_process_id integer DEFAULT 0 NOT NULL
 );
 
 
@@ -143,7 +144,8 @@ CREATE TABLE url (
     is_verified boolean DEFAULT false NOT NULL,
     verify_failed boolean DEFAULT false NOT NULL,
     verified_at timestamp(0) with time zone,
-    verified_url_id uuid
+    verified_url_id uuid,
+    verifier_process_id integer DEFAULT 0 NOT NULL
 );
 
 
@@ -355,6 +357,13 @@ CREATE INDEX mention_idx_url_id ON mention USING btree (url_id);
 
 
 --
+-- Name: mention_idx_verifier_process_id; Type: INDEX; Schema: public; Owner: -; Tablespace: 
+--
+
+CREATE INDEX mention_idx_verifier_process_id ON mention USING btree (verifier_process_id);
+
+
+--
 -- Name: mention_month_idx_mention_at; Type: INDEX; Schema: public; Owner: -; Tablespace: 
 --
 
@@ -499,6 +508,13 @@ CREATE INDEX mention_year_keyword_idx_mention_count ON mention_year_keyword USIN
 --
 
 CREATE INDEX mention_year_keyword_idx_verified_url_id ON mention_year_keyword USING btree (verified_url_id);
+
+
+--
+-- Name: url_idx_verifier_process_id; Type: INDEX; Schema: public; Owner: -; Tablespace: 
+--
+
+CREATE INDEX url_idx_verifier_process_id ON url USING btree (verifier_process_id);
 
 
 --
