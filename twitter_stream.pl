@@ -3,6 +3,8 @@
 use strict;
 use warnings;
 
+use lib 'lib';
+
 use File::HomeDir;
 use Path::Class;
 use Config::Any;
@@ -10,7 +12,8 @@ use AnyEvent;
 use AnyEvent::Twitter::Stream;
 use URI::Find::UTF8;
 use DBI ();
-use Data::UUID ();
+
+use TwitterStream;
 
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
@@ -72,6 +75,8 @@ sub init_stream {
     my $url_insert_sth     = $dbh->prepare("INSERT INTO url (id, url, host, first_mention_id, first_mention_at, first_mention_by_name, first_mention_by_user) VALUES (?,?,?,?,?,?,?)");
     my $url_select_sth     = $dbh->prepare("SELECT id, verified_url_id FROM url WHERE url = ?");
 
+    my $ts = TwitterStream->new();
+
     return AnyEvent::Twitter::Stream->new(
         username => $username,
         password => $password,
@@ -83,6 +88,7 @@ sub init_stream {
                 handle_tweet(
                     tweet              => $tweet,
                     dbh                => $dbh,
+                    ts                 => $ts,
                     mention_insert_sth => $mention_insert_sth,
                     keyword_insert_sth => $keyword_insert_sth,
                     keyword_select_sth => $keyword_select_sth,
@@ -135,6 +141,7 @@ sub handle_tweet {
     my (%args) = @_;
     my $tweet = $args{'tweet'};
     my $dbh   = $args{'dbh'};
+    my $ts    = $args{'ts'};
 
     return unless $tweet->{'user'}->{'screen_name'};
     return unless $tweet->{'text'};
@@ -157,7 +164,7 @@ sub handle_tweet {
     });
     $finder->find(\( $tweet->{'text'} ));
 
-    my $timestamp = parse_date( $tweet->{'created_at'} );
+    my $timestamp = $ts->parse_date( $tweet->{'created_at'} );
     my $user = $tweet->{'user'}->{'screen_name'};
     my $name = $tweet->{'user'}->{'name'} || $user;
 
@@ -170,7 +177,7 @@ sub handle_tweet {
         print "URL:           ", $url, "\n";
         $dbh->pg_savepoint('url_insert');
 
-        my $url_id = new_uuid();
+        my $url_id = $ts->new_uuid();
         my $verified_url_id;
         $args{'url_insert_sth'}->execute( $url_id, $url, $url->host, $tweet->{'id'}, $timestamp, $name, $user );
         if ( $dbh->err ) {
@@ -191,7 +198,7 @@ sub handle_tweet {
         }
 
         $args{'mention_insert_sth'}->execute(
-            new_uuid(),
+            $ts->new_uuid(),
             $timestamp,
             $url_id,
             undef, # no keyword specified
@@ -209,7 +216,7 @@ sub handle_tweet {
             print "KEYWORD:       ", $keyword, "\n";
             $dbh->pg_savepoint('keyword_insert');
 
-            my $keyword_id = new_uuid();
+            my $keyword_id = $ts->new_uuid();
             $args{'keyword_insert_sth'}->execute( $keyword_id, $keyword );
             if ( $dbh->err ) {
                 $dbh->pg_rollback_to('keyword_insert');
@@ -224,7 +231,7 @@ sub handle_tweet {
             print "KEYWORD ID:    ", $keyword_id, "\n";
 
             $args{'mention_insert_sth'}->execute(
-                new_uuid(),
+                $ts->new_uuid(),
                 $timestamp,
                 $url_id,
                 $keyword_id,
@@ -247,36 +254,6 @@ sub handle_tweet {
     }
 
     print "-" x 79, "\n";
-}
-
-sub parse_date {
-    my ($str) = @_;
-    ( my $year = $str ) =~ s/\A.+(\d{4})\Z/$1/xms;
-    ( my $month = $str ) =~ s/\A.+?\s+(\w+?)\s.*\Z/$1/xms;
-    my %months = (
-        Jan => "01",
-        Feb => "02",
-        Mar => "03",
-        Apr => "04",
-        May => "05",
-        Jun => "06",
-        Jul => "07",
-        Aug => "08",
-        Sep => "09",
-        Oct => "10",
-        Nov => "11",
-        Dec => "12",
-    );
-    $month = $months{$month};
-    ( my $day = $str ) =~ s/\A\w+?\s+?\w+?\s+?(\d{2}).*\Z/$1/xms;
-    ( my $hour = $str ) =~ s/\A\w+?\s+?\w+?\s+?\d+?\s+?(\d{2}).*\Z/$1/xms;
-    ( my $minute = $str ) =~ s/\A\w+?\s+?\w+?\s+?\d+?\s+?\d+?:(\d{2}).*\Z/$1/xms;
-    ( my $second = $str ) =~ s/\A\w+?\s+?\w+?\s+?\d+?\s+?\d+?:\d+?:(\d{2}).*\Z/$1/xms;
-    return "$year-$month-$day $hour:$minute:$second UTC";
-}
-
-sub new_uuid {
-    return Data::UUID->new->create_str();
 }
 
 1;

@@ -3,14 +3,16 @@
 use strict;
 use warnings;
 
+use lib 'lib';
+
 use LWP::UserAgent ();
 use Encode ();
 use HTML::Encoding ();
 use HTML::Entities ();
 use DBI qw(:sql_types);
 use DBD::Pg qw(:pg_types);
-use Parallel::Iterator ();
-use Data::UUID ();
+
+use TwitterStream;
 
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
@@ -29,6 +31,8 @@ sub run {
     $dbh->{'PrintError'} = 0; # Silence database warnings
 
     my $pid = $$; # Key by process id
+
+    my $ts = TwitterStream->new();
 
     my $mention_select_sth = $dbh->prepare('SELECT * FROM mention WHERE verifier_process_id = ? ORDER BY mention_at DESC LIMIT 1');
     my $mention_lock_sth = $dbh->prepare('UPDATE mention SET verifier_process_id = ? WHERE url_id = ( SELECT url_id FROM mention WHERE verifier_process_id = 0 ORDER BY mention_at DESC LIMIT 1 )');
@@ -99,7 +103,7 @@ sub run {
         }
 
         # Do work with url record
-        handle_url( $dbh, $url_row );
+        handle_url( $dbh, $ts, $url_row );
 
         # Reset "lock" on url and mention record(s)
         $url_unlock_sth->execute( $pid );
@@ -120,11 +124,11 @@ sub run {
 }
 
 sub handle_url {
-    my ($dbh, $url_row) = @_;
+    my ($dbh, $ts, $url_row) = @_;
 
     # Verify URL and update record ( in memory update as well )
     unless ( $url_row->{'is_verified'} ) {
-        verify_url( $dbh, $url_row );
+        verify_url( $dbh, $ts, $url_row );
     }
 
     # If verification failed for some reason, bail out
@@ -156,7 +160,7 @@ sub handle_url {
 }
 
 sub verify_url {
-    my ( $dbh, $url_row ) = @_;
+    my ( $dbh, $ts, $url_row ) = @_;
 
     print "Verifying URL: " . $url_row->{'url'} . "\n";
 
@@ -265,7 +269,7 @@ INSERT INTO verified_url (id, url, verified_at,       content_type, title, first
 VALUES                   (?,  ?,   current_timestamp, ?,            ?,     ?,                ?,                ?,                     ?                    )
 EOM
 
-    my $verified_url_id = new_uuid();
+    my $verified_url_id = $ts->new_uuid();
     $verified_url_sth->bind_param(1, $verified_url_id, { pg_type => PG_UUID });
     $verified_url_sth->bind_param(2, $url); # VARCHAR
     $verified_url_sth->bind_param(3, substr( $content_type, 0, 50 ) ); # VARCHAR
@@ -428,10 +432,6 @@ EOM
 
     print "Mention stored OK.\n";
     return;
-}
-
-sub new_uuid {
-    return Data::UUID->new->create_str();
 }
 
 1;
