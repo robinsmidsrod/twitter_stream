@@ -155,17 +155,30 @@ sub handle_tweet {
             print "VERIFIED URL ID: ", $verified_url_id, "\n";
         }
 
-        $args{'mention_insert_sth'}->execute(
-            $ts->new_uuid(),
-            $timestamp,
-            $url_id,
-            undef, # no keyword specified
-        );
+        if ( $verified_url_id ) {
+            # URL is already verified, add to summary tables immediately
+            $ts->store_mention(
+                {
+                    mention_at => $timestamp,
+                    url_id     => $url_id,
+                },
+                $verified_url_id,
+            );
+        }
+        else {
+            # Add record to 'mention' table for later resolution
+            $args{'mention_insert_sth'}->execute(
+                $ts->new_uuid(),
+                $timestamp,
+                $url_id,
+                undef, # no keyword specified
+            );
 
-        if ( $dbh->err ) {
-            print "Storing mention of '$url' failed: ", $dbh->errstr, "\n";
-            $dbh->pg_rollback_to('url_insert');
-            next; # Skip to next URL if bad stuff happened
+            if ( $dbh->err ) {
+                print "Storing mention of '$url' failed: ", $dbh->errstr, "\n";
+                $dbh->pg_rollback_to('url_insert');
+                next; # Skip to next URL if bad stuff happened
+            }
         }
 
         foreach my $keyword ( sort keys %keywords ) {
@@ -188,16 +201,30 @@ sub handle_tweet {
             }
             print "KEYWORD ID:    ", $keyword_id, "\n";
 
-            $args{'mention_insert_sth'}->execute(
-                $ts->new_uuid(),
-                $timestamp,
-                $url_id,
-                $keyword_id,
-            );
-            if ( $dbh->err ) {
-                print "Inserting mention of '$url' with keyword '$keyword' failed: ", $dbh->errstr, "\n";
-                $dbh->pg_rollback_to('keyword_insert');
-                next;
+            if ( $verified_url_id ) {
+                # URL is already verified, add to keyword summary tables immediately
+                $ts->store_mention(
+                    {
+                        mention_at => $timestamp,
+                        url_id     => $url_id,
+                        keyword_id => $keyword_id,
+                    },
+                    $verified_url_id,
+                );
+            }
+            else {
+                # Add record to 'mention' table with keyword for later resolution
+                $args{'mention_insert_sth'}->execute(
+                    $ts->new_uuid(),
+                    $timestamp,
+                    $url_id,
+                    $keyword_id,
+                );
+                if ( $dbh->err ) {
+                    print "Inserting mention of '$url' with keyword '$keyword' failed: ", $dbh->errstr, "\n";
+                    $dbh->pg_rollback_to('keyword_insert');
+                    next;
+                }
             }
         }
     }
