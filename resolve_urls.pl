@@ -149,7 +149,7 @@ sub handle_url {
             $dbh->pg_rollback_to("handle_url");
             return;
         }
-        store_mention( $ts, $mention_row, $url_row );
+        $ts->store_mention( $mention_row, $url_row->{'verified_url_id'} );
     }
 
     return;
@@ -336,102 +336,6 @@ EOM
     print "Content-Type: ", $content_type, "\n";
     print "Verified OK: ", $verified_url_id, "\n";
 
-    return;
-}
-
-sub store_mention {
-    my ( $ts, $mention_row, $url_row ) = @_;
-
-    my $dbh = $ts->dbh;
-
-    print "Storing mention of " . $url_row->{'verified_url_id'} . "\n";
-
-    $dbh->pg_savepoint("store_mention");
-
-    my $mention_delete_sth = $dbh->prepare("DELETE FROM mention WHERE id = ?");
-
-    my @precision = ( 'day', 'week', 'month', 'year' );
-
-    if ( $mention_row->{'keyword_id'} ) {
-        # Create record in mention_day/week/month/year_keyword
-        print "      with keyword " . $mention_row->{'keyword_id'} . "\n";
-        foreach my $precision ( @precision ) {
-            $dbh->pg_savepoint("insert_mention_keyword_$precision");
-            my $sth = $dbh->prepare(<<"EOM");
-INSERT INTO mention_${precision}_keyword (mention_at, verified_url_id, keyword_id, mention_count)
-VALUES ( date_trunc('$precision', ?::date)::date, ?, ?, 1)
-EOM
-            $sth->execute(
-                $mention_row->{'mention_at'},
-                $url_row->{'verified_url_id'},
-                $mention_row->{'keyword_id'},
-            );
-            if ( $dbh->err ) {
-                $dbh->pg_rollback_to("insert_mention_keyword_$precision");
-                my $update_sth = $dbh->prepare(<<"EOM");
-UPDATE mention_${precision}_keyword SET mention_count = mention_count + 1
-WHERE mention_at = date_trunc('$precision', ?::date)::date AND verified_url_id = ? AND keyword_id = ?
-EOM
-                $update_sth->execute(
-                    $mention_row->{'mention_at'},
-                    $url_row->{'verified_url_id'},
-                    $mention_row->{'keyword_id'},
-                );
-                if ( $dbh->err ) {
-                    print "Database error occured: ", $dbh->errstr, "\n";
-                    $dbh->pg_rollback_to("store_mention");
-                    return;
-                }
-            }
-        }
-        # Delete mention record
-        $mention_delete_sth->execute( $mention_row->{'id'} );
-        if ( $dbh->err ) {
-            print "Database error occured: ", $dbh->errstr, "\n";
-            $dbh->pg_rollback_to("store_mention");
-            return;
-        }
-        print "Mention (with keyword) stored OK.\n";
-        return;
-    }
-
-    # Create record in mention_day/week/month/year
-    foreach my $precision ( @precision ) {
-        $dbh->pg_savepoint("insert_mention_$precision");
-        my $sth = $dbh->prepare(<<"EOM");
-INSERT INTO mention_${precision} (mention_at, verified_url_id, mention_count)
-VALUES ( date_trunc('$precision', ?::date)::date, ?, 1)
-EOM
-        $sth->execute(
-            $mention_row->{'mention_at'},
-            $url_row->{'verified_url_id'},
-        );
-        if ( $dbh->err ) {
-            $dbh->pg_rollback_to("insert_mention_$precision");
-            my $update_sth = $dbh->prepare(<<"EOM");
-UPDATE mention_${precision} SET mention_count = mention_count + 1
-WHERE mention_at = date_trunc('$precision', ?::date)::date AND verified_url_id = ?
-EOM
-            $update_sth->execute(
-                $mention_row->{'mention_at'},
-                $url_row->{'verified_url_id'},
-            );
-            if ( $dbh->err ) {
-                print "Database error occured: ", $dbh->errstr, "\n";
-                $dbh->pg_rollback_to("store_mention");
-                return;
-            }
-        }
-    }
-    # Delete mention record
-    $mention_delete_sth->execute( $mention_row->{'id'} );
-    if ( $dbh->err ) {
-        print "Database error occured: ", $dbh->errstr, "\n";
-        $dbh->pg_rollback_to("store_mention");
-        return;
-    }
-
-    print "Mention stored OK.\n";
     return;
 }
 

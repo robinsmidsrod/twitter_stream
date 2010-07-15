@@ -146,6 +146,108 @@ sub parse_date {
     return "$year-$month-$day $hour:$minute:$second UTC";
 }
 
+sub store_mention {
+    my ( $self, $mention_row, $verified_url_id ) = @_;
+    confess("No verified_url_id specified") unless $verified_url_id;
+
+    print "Storing mention of " . $verified_url_id . "\n";
+
+    $self->dbh->pg_savepoint("store_mention");
+
+    my $mention_delete_sth = $self->dbh->prepare("DELETE FROM mention WHERE id = ?");
+
+    my @precision = ( 'day', 'week', 'month', 'year' );
+
+    if ( $mention_row->{'keyword_id'} ) {
+        # Create record in mention_day/week/month/year_keyword
+        print "      with keyword " . $mention_row->{'keyword_id'} . "\n";
+        foreach my $precision ( @precision ) {
+            $self->dbh->pg_savepoint("insert_mention_keyword_$precision");
+            my $sth = $self->dbh->prepare(<<"EOM");
+INSERT INTO mention_${precision}_keyword (mention_at, verified_url_id, keyword_id, mention_count)
+VALUES ( date_trunc('$precision', ?::date)::date, ?, ?, 1)
+EOM
+            $sth->execute(
+                $mention_row->{'mention_at'},
+                $verified_url_id,
+                $mention_row->{'keyword_id'},
+            );
+            if ( $self->dbh->err ) {
+                $self->dbh->pg_rollback_to("insert_mention_keyword_$precision");
+                my $update_sth = $self->dbh->prepare(<<"EOM");
+UPDATE mention_${precision}_keyword SET mention_count = mention_count + 1
+WHERE mention_at = date_trunc('$precision', ?::date)::date AND verified_url_id = ? AND keyword_id = ?
+EOM
+                $update_sth->execute(
+                    $mention_row->{'mention_at'},
+                    $verified_url_id,
+                    $mention_row->{'keyword_id'},
+                );
+                if ( $self->dbh->err ) {
+                    print "Database error occured: ", $self->dbh->errstr, "\n";
+                    $self->dbh->pg_rollback_to("store_mention");
+                    return;
+                }
+            }
+        }
+
+        # Delete mention record (if exists)
+        if ( $mention_row->{'id'} ) {
+            $mention_delete_sth->execute( $mention_row->{'id'} );
+            if ( $self->dbh->err ) {
+                print "Database error occured: ", $self->dbh->errstr, "\n";
+                $self->dbh->pg_rollback_to("store_mention");
+                return;
+            }
+        }
+
+        print "Mention (with keyword) stored OK.\n";
+        return;
+    }
+
+    # Create record in mention_day/week/month/year
+    foreach my $precision ( @precision ) {
+        $self->dbh->pg_savepoint("insert_mention_$precision");
+        my $sth = $self->dbh->prepare(<<"EOM");
+INSERT INTO mention_${precision} (mention_at, verified_url_id, mention_count)
+VALUES ( date_trunc('$precision', ?::date)::date, ?, 1)
+EOM
+        $sth->execute(
+            $mention_row->{'mention_at'},
+            $verified_url_id,
+        );
+        if ( $self->dbh->err ) {
+            $self->dbh->pg_rollback_to("insert_mention_$precision");
+            my $update_sth = $self->dbh->prepare(<<"EOM");
+UPDATE mention_${precision} SET mention_count = mention_count + 1
+WHERE mention_at = date_trunc('$precision', ?::date)::date AND verified_url_id = ?
+EOM
+            $update_sth->execute(
+                $mention_row->{'mention_at'},
+                $verified_url_id,
+            );
+            if ( $self->dbh->err ) {
+                print "Database error occured: ", $self->dbh->errstr, "\n";
+                $self->dbh->pg_rollback_to("store_mention");
+                return;
+            }
+        }
+    }
+
+    # Delete mention record (if exists)
+    if ( $mention_row->{'id'} ) {
+        $mention_delete_sth->execute( $mention_row->{'id'} );
+        if ( $self->dbh->err ) {
+            print "Database error occured: ", $self->dbh->errstr, "\n";
+            $self->dbh->pg_rollback_to("store_mention");
+            return;
+        }
+    }
+
+    print "Mention stored OK.\n";
+    return;
+}
+
 no Moose;
 __PACKAGE__->meta->make_immutable();
 
