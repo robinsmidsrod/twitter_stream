@@ -70,7 +70,7 @@ sub init_stream {
     my $keyword_insert_sth = $dbh->prepare("INSERT INTO keyword (id, keyword) VALUES (?,?)");
     my $keyword_select_sth = $dbh->prepare("SELECT id FROM keyword WHERE keyword = ?");
     my $url_insert_sth     = $dbh->prepare("INSERT INTO url (id, url, host, first_mention_id, first_mention_at, first_mention_by_name, first_mention_by_user) VALUES (?,?,?,?,?,?,?)");
-    my $url_select_sth     = $dbh->prepare("SELECT id FROM url WHERE url = ?");
+    my $url_select_sth     = $dbh->prepare("SELECT id, verified_url_id FROM url WHERE url = ?");
 
     return AnyEvent::Twitter::Stream->new(
         username => $username,
@@ -171,11 +171,12 @@ sub handle_tweet {
         $dbh->pg_savepoint('url_insert');
 
         my $url_id = new_uuid();
+        my $verified_url_id;
         $args{'url_insert_sth'}->execute( $url_id, $url, $url->host, $tweet->{'id'}, $timestamp, $name, $user );
         if ( $dbh->err ) {
             $dbh->pg_rollback_to('url_insert');
             $args{'url_select_sth'}->execute($url);
-            ($url_id) = $args{'url_select_sth'}->fetchrow_array();
+            ($url_id, $verified_url_id) = $args{'url_select_sth'}->fetchrow_array();
         }
         # If we couldn't resolve url_id, rollback (which basically means skip)
         unless ( $url_id ) {
@@ -184,6 +185,10 @@ sub handle_tweet {
             next;
         }
         print "URL ID:        ", $url_id, "\n";
+
+        if ( $verified_url_id ) {
+            print "VERIFIED URL ID: ", $verified_url_id, "\n";
+        }
 
         $args{'mention_insert_sth'}->execute(
             new_uuid(),
