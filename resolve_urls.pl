@@ -9,8 +9,7 @@ use LWP::UserAgent ();
 use Encode ();
 use HTML::Encoding ();
 use HTML::Entities ();
-use DBI qw(:sql_types);
-use DBD::Pg qw(:pg_types);
+#use DBD::Pg qw(:pg_types);
 
 use TwitterStream;
 
@@ -25,14 +24,9 @@ exit;
 
 sub run {
 
-    my $dbh = DBI->connect('dbi:Pg:dbname=twitter_stream', "", "", { AutoCommit => 0 } );
-    die("Can't connect to database") unless $dbh;
-    $dbh->{'pg_enable_utf8'} = 1; # Return data from DB already decoded
-    $dbh->{'PrintError'} = 0; # Silence database warnings
-
     my $pid = $$; # Key by process id
-
     my $ts = TwitterStream->new();
+    my $dbh = $ts->dbh;
 
     my $mention_select_sth = $dbh->prepare('SELECT * FROM mention WHERE verifier_process_id = ? ORDER BY mention_at DESC LIMIT 1');
     my $mention_lock_sth = $dbh->prepare('UPDATE mention SET verifier_process_id = ? WHERE url_id = ( SELECT url_id FROM mention WHERE verifier_process_id = 0 ORDER BY mention_at DESC LIMIT 1 )');
@@ -103,7 +97,7 @@ sub run {
         }
 
         # Do work with url record
-        handle_url( $dbh, $ts, $url_row );
+        handle_url( $ts, $url_row );
 
         # Reset "lock" on url and mention record(s)
         $url_unlock_sth->execute( $pid );
@@ -124,11 +118,13 @@ sub run {
 }
 
 sub handle_url {
-    my ($dbh, $ts, $url_row) = @_;
+    my ($ts, $url_row) = @_;
+
+    my $dbh = $ts->dbh;
 
     # Verify URL and update record ( in memory update as well )
     unless ( $url_row->{'is_verified'} ) {
-        verify_url( $dbh, $ts, $url_row );
+        verify_url( $ts, $url_row );
     }
 
     # If verification failed for some reason, bail out
@@ -153,14 +149,16 @@ sub handle_url {
             $dbh->pg_rollback_to("handle_url");
             return;
         }
-        store_mention( $dbh, $mention_row, $url_row );
+        store_mention( $ts, $mention_row, $url_row );
     }
 
     return;
 }
 
 sub verify_url {
-    my ( $dbh, $ts, $url_row ) = @_;
+    my ( $ts, $url_row ) = @_;
+
+    my $dbh = $ts->dbh;
 
     print "Verifying URL: " . $url_row->{'url'} . "\n";
 
@@ -270,24 +268,25 @@ VALUES                   (?,  ?,   current_timestamp, ?,            ?,     ?,   
 EOM
 
     my $verified_url_id = $ts->new_uuid();
-    $verified_url_sth->bind_param(1, $verified_url_id, { pg_type => PG_UUID });
-    $verified_url_sth->bind_param(2, $url); # VARCHAR
-    $verified_url_sth->bind_param(3, substr( $content_type, 0, 50 ) ); # VARCHAR
-    $verified_url_sth->bind_param(4, defined($title) ? Encode::encode_utf8($title) : undef ); # VARCHAR
-    $verified_url_sth->bind_param(5, $url_row->{'first_mention_id'}, { pg_type => PG_INT8 } );
-    $verified_url_sth->bind_param(6, $url_row->{'first_mention_at'}, { pg_type => PG_TIMESTAMPTZ } );
-    $verified_url_sth->bind_param(7, $url_row->{'first_mention_by_name'} ); # VARCHAR
-    $verified_url_sth->bind_param(8, $url_row->{'first_mention_by_user'} ); # VARCHAR
-    $verified_url_sth->execute();
-#        $verified_url_id,
-#        $url,
-#        substr( $content_type, 0, 50 ),
-#        ( defined($title) ? Encode::encode_utf8($title) : undef ),
-#        $url_row->{'first_mention_id'},
-#        $url_row->{'first_mention_at'},
-#        $url_row->{'first_mention_by_name'},
-#        $url_row->{'first_mention_by_user'},
-#    );
+#    $verified_url_sth->bind_param(1, $verified_url_id, { pg_type => PG_UUID });
+#    $verified_url_sth->bind_param(2, $url); # VARCHAR
+#    $verified_url_sth->bind_param(3, substr( $content_type, 0, 50 ) ); # VARCHAR
+#    $verified_url_sth->bind_param(4, defined($title) ? Encode::encode_utf8($title) : undef ); # VARCHAR
+#    $verified_url_sth->bind_param(5, $url_row->{'first_mention_id'}, { pg_type => PG_INT8 } );
+#    $verified_url_sth->bind_param(6, $url_row->{'first_mention_at'}, { pg_type => PG_TIMESTAMPTZ } );
+#    $verified_url_sth->bind_param(7, $url_row->{'first_mention_by_name'} ); # VARCHAR
+#    $verified_url_sth->bind_param(8, $url_row->{'first_mention_by_user'} ); # VARCHAR
+#    $verified_url_sth->execute();
+    $verified_url_sth->execute(
+        $verified_url_id,
+        $url,
+        substr( $content_type, 0, 50 ),
+        ( defined($title) ? Encode::encode_utf8($title) : undef ),
+        $url_row->{'first_mention_id'},
+        $url_row->{'first_mention_at'},
+        $url_row->{'first_mention_by_name'},
+        $url_row->{'first_mention_by_user'},
+    );
     if ( $dbh->err ) {
         $dbh->pg_rollback_to("insert_verified_url");
         my $sth = $dbh->prepare("SELECT id FROM verified_url WHERE url = ?");
@@ -341,7 +340,9 @@ EOM
 }
 
 sub store_mention {
-    my ( $dbh, $mention_row, $url_row ) = @_;
+    my ( $ts, $mention_row, $url_row ) = @_;
+
+    my $dbh = $ts->dbh;
 
     print "Storing mention of " . $url_row->{'verified_url_id'} . "\n";
 

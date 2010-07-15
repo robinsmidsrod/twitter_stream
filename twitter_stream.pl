@@ -5,36 +5,25 @@ use warnings;
 
 use lib 'lib';
 
-use File::HomeDir;
-use Path::Class;
-use Config::Any;
 use AnyEvent;
 use AnyEvent::Twitter::Stream;
 use URI::Find::UTF8;
-use DBI ();
 
 use TwitterStream;
 
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
 
-#track => 'perl,java,python,ruby,rails,bash,linux,windows,freebsd,solaris,nexenta,openbsd,opensolaris,windows7', #,html,css,javascript,flickr,smugsmug,photo,photography,camera,canon,nikon,sony,pentax,picture,image,hdr',
-
-my @keywords = @ARGV;
-
-unless ( scalar @keywords ) {
-    print "No keywords specified, terminating...\n";
-    exit;
-}
-
-run(@keywords);
+run();
 
 exit;
 
 ############################################
 
 sub run {
-    my (@keywords) = @_;
+
+    my $ts = TwitterStream->new();
+
     my $timeout = 1;
     while ( 1 ) {
         last if $timeout >= 960; # Exit if more than 16 minutes has passed
@@ -42,7 +31,7 @@ sub run {
         sleep($timeout);
         eval {
             my $done = AnyEvent->condvar;
-            my $stream = init_stream($done, \$timeout, @keywords);
+            my $stream = init_stream($ts, $done, \$timeout);
             $done->recv();
         };
         if ($@) {
@@ -54,20 +43,9 @@ sub run {
 }
 
 sub init_stream {
-    my ($done, $timeout_ref, @keywords) = @_;
+    my ($ts, $done, $timeout_ref) = @_;
 
-    my $config_file = get_config_file();
-    my $config = get_config($config_file);
-    my $username = $ENV{'TWITTER_STREAM_USERNAME'} || $config->{'global'}->{'username'};
-    my $password = $ENV{'TWITTER_STREAM_PASSWORD'} || $config->{'global'}->{'password'};
-
-    unless ( $username and $password ) {
-        die("Please specify your Twitter username and password on command line or in '$config_file'.\n");
-    }
-
-    my $dbh = DBI->connect('dbi:Pg:dbname=twitter_stream', "", "", { AutoCommit => 0 } );
-    die("Can't connect to database") unless $dbh;
-    $dbh->{'PrintError'} = 0;
+    my $dbh = $ts->dbh;
 
     my $mention_insert_sth = $dbh->prepare("INSERT INTO mention (id, mention_at, url_id, keyword_id) VALUES (?,?,?,?)");
     my $keyword_insert_sth = $dbh->prepare("INSERT INTO keyword (id, keyword) VALUES (?,?)");
@@ -75,19 +53,18 @@ sub init_stream {
     my $url_insert_sth     = $dbh->prepare("INSERT INTO url (id, url, host, first_mention_id, first_mention_at, first_mention_by_name, first_mention_by_user) VALUES (?,?,?,?,?,?,?)");
     my $url_select_sth     = $dbh->prepare("SELECT id, verified_url_id FROM url WHERE url = ?");
 
-    my $ts = TwitterStream->new();
+    print "Using '" . $ts->twitter_method . "' method to track the following keywords: " . $ts->twitter_track . "\n";
 
     return AnyEvent::Twitter::Stream->new(
-        username => $username,
-        password => $password,
-        method   => 'filter',
-        track    => join(",", @keywords),
+        username => $ts->twitter_username,
+        password => $ts->twitter_password,
+        method   => $ts->twitter_method,
+        track    => $ts->twitter_track,
         on_tweet => sub {
             my ($tweet) = @_;
             eval {
                 handle_tweet(
                     tweet              => $tweet,
-                    dbh                => $dbh,
                     ts                 => $ts,
                     mention_insert_sth => $mention_insert_sth,
                     keyword_insert_sth => $keyword_insert_sth,
@@ -117,35 +94,16 @@ sub init_stream {
     );
 }
 
-sub get_config_file {
-    my $home = File::HomeDir->my_data;
-    my $conf_file = Path::Class::Dir->new($home)->file('.twitter_stream.ini');
-    return $conf_file;
-}
-
-sub get_config {
-    my ($conf_file) = @_;
-    my $cfg = Config::Any->load_files({
-        use_ext => 1,
-        files   => [ $conf_file ],
-    });
-    foreach my $config_entry ( @{ $cfg } ) {
-        my ($filename, $config) = %{ $config_entry };
-        warn("Loaded config from file: $filename\n");
-        return $config;
-    }
-    return {};
-}
-
 sub handle_tweet {
     my (%args) = @_;
     my $tweet = $args{'tweet'};
-    my $dbh   = $args{'dbh'};
     my $ts    = $args{'ts'};
 
     return unless $tweet->{'user'}->{'screen_name'};
     return unless $tweet->{'text'};
     return unless $tweet->{'text'} =~ m{http}i;
+
+    my $dbh = $ts->dbh;
 
     my %keywords;
     foreach my $hashtag ( sort $tweet->{'text'} =~ m{#(\w+?)\b}g ) {
