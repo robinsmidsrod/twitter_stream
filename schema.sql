@@ -32,8 +32,7 @@ CREATE TABLE mention (
     id uuid NOT NULL,
     mention_at timestamp with time zone NOT NULL,
     url_id uuid NOT NULL,
-    keyword_id uuid,
-    verifier_process_id integer DEFAULT 0 NOT NULL
+    keyword_id uuid
 );
 
 
@@ -145,8 +144,26 @@ CREATE TABLE url (
     verify_failed boolean DEFAULT false NOT NULL,
     verified_at timestamp(0) with time zone,
     verified_url_id uuid,
-    verifier_process_id integer DEFAULT 0 NOT NULL
+    verify_lock_id integer NOT NULL
 );
+
+
+--
+-- Name: url_verify_lock_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE url_verify_lock_id_seq
+    INCREMENT BY 1
+    NO MAXVALUE
+    NO MINVALUE
+    CACHE 1;
+
+
+--
+-- Name: url_verify_lock_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE url_verify_lock_id_seq OWNED BY url.verify_lock_id;
 
 
 --
@@ -164,6 +181,13 @@ CREATE TABLE verified_url (
     first_mention_by_name character varying(100) NOT NULL,
     first_mention_by_user character varying(100) NOT NULL
 );
+
+
+--
+-- Name: verify_lock_id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE url ALTER COLUMN verify_lock_id SET DEFAULT nextval('url_verify_lock_id_seq'::regclass);
 
 
 --
@@ -357,13 +381,6 @@ CREATE INDEX mention_idx_url_id ON mention USING btree (url_id);
 
 
 --
--- Name: mention_idx_verifier_process_id; Type: INDEX; Schema: public; Owner: -; Tablespace: 
---
-
-CREATE INDEX mention_idx_verifier_process_id ON mention USING btree (verifier_process_id);
-
-
---
 -- Name: mention_month_idx_mention_at; Type: INDEX; Schema: public; Owner: -; Tablespace: 
 --
 
@@ -508,13 +525,6 @@ CREATE INDEX mention_year_keyword_idx_mention_count ON mention_year_keyword USIN
 --
 
 CREATE INDEX mention_year_keyword_idx_verified_url_id ON mention_year_keyword USING btree (verified_url_id);
-
-
---
--- Name: url_idx_verifier_process_id; Type: INDEX; Schema: public; Owner: -; Tablespace: 
---
-
-CREATE INDEX url_idx_verifier_process_id ON url USING btree (verifier_process_id);
 
 
 --
