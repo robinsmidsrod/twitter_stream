@@ -44,6 +44,19 @@ SELECT u.* FROM (
 WHERE pg_try_advisory_lock('url'::regclass::integer,u.verify_lock_id::integer)
 LIMIT 1;
 EOM
+
+    my $url_select_leftover_sth = $dbh->prepare(<<'EOM');
+SELECT u.* FROM (
+    SELECT url.*
+    FROM url join mention on url.id=mention.url_id
+    WHERE url.is_verified = TRUE AND verify_failed = FALSE
+    ORDER BY first_mention_at DESC
+    LIMIT ? -- max workers
+) u
+WHERE pg_try_advisory_lock('url'::regclass::integer,u.verify_lock_id::integer)
+LIMIT 1;
+EOM
+
     my $url_unlock_sth = $dbh->prepare("SELECT pg_advisory_unlock('url'::regclass::integer, verify_lock_id::integer) FROM url WHERE id = ?");
 
     while( 1 ) {
@@ -68,15 +81,43 @@ EOM
             next;
         }
 
-        # Do nothing if nothing found
+        # Try to fetch leftover mentions if no URL record found
         unless ( ref($url_row) eq 'HASH' and keys %$url_row > 0 ) {
-            $dbh->rollback(); # No record found, abort work
-            print "Sleeping (no url record found)...\n";
-            sleep(1);
-            next;
+
+            print "Trying leftovers...\n";
+
+            # Try to fetch leftover mentions
+            $url_select_leftover_sth->execute($concurrency_max);
+            if ( $dbh->err ) {
+                print "Database error occured: ", $dbh->errstr, "\n";
+                $dbh->rollback();
+                print "Sleeping a little before trying again...\n";
+                sleep(1);
+                next;
+            }
+
+            # Actually fetch the data from the record
+            $url_row = $url_select_leftover_sth->fetchrow_hashref();
+            if ( $dbh->err ) {
+                print "Database error occured: ", $dbh->errstr, "\n";
+                $dbh->rollback();
+                print "Sleeping a little before trying again...\n";
+                sleep(1);
+                next;
+            }
+
+            # Do nothing if nothing found
+            unless ( ref($url_row) eq 'HASH' and keys %$url_row > 0 ) {
+                $dbh->rollback(); # No record found, abort work
+                print "Sleeping (no url record found)...\n";
+                sleep(1);
+                next;
+			}
+
+			print "Leftover found: " . $url_row->{'url'} . "\n";
         }
 
-        # We've got advisory lock (which releases only on disconnect), release transaction and get to work
+        # We've got advisory lock (which releases only on disconnect), commit transaction and get to work
         $dbh->commit();
 
         # Do work with url record
