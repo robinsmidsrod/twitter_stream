@@ -106,7 +106,7 @@ sub handle_url {
     print "Processing URL:" . $url_row->{'url'} . "\n";
 
     # Verify URL and update record ( in memory update as well )
-    unless ( $url_row->{'is_verified'} ) {
+    unless ( $url_row->{'verified_url_id'} ) {
         verify_url( $ts, $url_row );
     }
 
