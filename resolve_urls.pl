@@ -28,89 +28,70 @@ sub run {
     my $ts = TwitterStream->new();
     my $dbh = $ts->dbh;
 
-    my $mention_select_sth = $dbh->prepare('SELECT * FROM mention WHERE verifier_process_id = ? ORDER BY mention_at DESC LIMIT 1');
-    my $mention_lock_sth = $dbh->prepare('UPDATE mention SET verifier_process_id = ? WHERE url_id = ( SELECT url_id FROM mention WHERE verifier_process_id = 0 ORDER BY mention_at DESC LIMIT 1 )');
-    my $mention_unlock_sth = $dbh->prepare('UPDATE mention SET verifier_process_id = 0 WHERE verifier_process_id = ?');
+    my $concurrency_max = 100;
 
-    my $url_select_sth = $dbh->prepare('SELECT * FROM url WHERE verifier_process_id = ? AND id = ?');
-    my $url_lock_sth = $dbh->prepare('UPDATE url SET verifier_process_id = ? WHERE id = ? AND verifier_process_id = 0');
-    my $url_unlock_sth = $dbh->prepare('UPDATE url SET verifier_process_id = 0 WHERE verifier_process_id = ?');
+    my $url_select_sth = $dbh->prepare(<<'EOM');
+SELECT u.* FROM (
+ SELECT * FROM url
+ WHERE (
+  is_verified = FALSE
+   OR
+  ( is_verified = TRUE AND verify_failed = TRUE AND verified_at < (current_timestamp - interval '1 hour') )
+ )
+ ORDER BY first_mention_at DESC
+ LIMIT ? -- max workers
+) u
+WHERE pg_try_advisory_lock('url'::regclass::integer,u.verify_lock_id::integer)
+LIMIT 1;
+EOM
+    my $url_unlock_sth = $dbh->prepare("SELECT pg_advisory_unlock('url'::regclass::integer, verify_lock_id::integer) FROM url WHERE id = ?");
 
     while( 1 ) {
-        # Lock mention/url table to set verifier_process_id
-        $dbh->do("LOCK TABLE mention, url IN EXCLUSIVE MODE");
-#        if ( $dbh->err ) {
-#            $dbh->rollback();
-#            next;
-#        }
 
-        # Tag mention records with this process' pid
-        $mention_lock_sth->execute($pid);
-#        if ( $dbh->err ) {
-#            $dbh->rollback();
-#            next;
-#        }
-        $mention_select_sth->execute($pid);
-#        if ( $dbh->err ) {
-#            $dbh->rollback();
-#            next;
-#        }
-        my $mention_row = $mention_select_sth->fetchrow_hashref();
-#        if ( $dbh->err ) {
-#            $dbh->rollback();
-#            next;
-#        }
-        unless ( ref($mention_row) eq 'HASH' and keys %$mention_row > 0 ) {
-            $dbh->rollback(); # No record found, abort work (will release exclusive locks)
-            print "Sleeping (no mention found)...\n";
-            sleep(1);
-            next; # Nothing found, so skip it
-        }
-
-        # Tag url record with this process' pid
-        $url_lock_sth->execute( $pid, $mention_row->{'url_id'} );
+        # Advisory lock first available 'url' record
+        $url_select_sth->execute($concurrency_max);
         if ( $dbh->err ) {
-            print "Error while tagging 'url' record: ", $dbh->errstr, "\n";
-            $dbh->rollback(); # Will release exclusive lock
+            print "Database error occured: ", $dbh->errstr, "\n";
+            $dbh->rollback();
+            print "Sleeping a little before trying again...\n";
+            sleep(1);
             next;
         }
-        else {
-            $dbh->commit(); # Will also release exclusive lock
+
+        # Actually fetch the data from the record
+        my $url_row = $url_select_sth->fetchrow_hashref();
+        if ( $dbh->err ) {
+            print "Database error occured: ", $dbh->errstr, "\n";
+            $dbh->rollback();
+            print "Sleeping a little before trying again...\n";
+            sleep(1);
+            next;
         }
 
-        # Fetch record according to pid
-        $url_select_sth->execute( $pid, $mention_row->{'url_id'} );
- #       if ( $dbh->err ) {
- #           $dbh->rollback();
- #           next;
- #       }
-        my $url_row = $url_select_sth->fetchrow_hashref();
- #       if ( $dbh->err ) {
- #           $dbh->rollback();
- #           next;
- #       }
+        # Do nothing if nothing found
         unless ( ref($url_row) eq 'HASH' and keys %$url_row > 0 ) {
             $dbh->rollback(); # No record found, abort work
-            print "Sleeping (no url found)...\n";
+            print "Sleeping (no url record found)...\n";
             sleep(1);
             next;
         }
+
+        # We've got advisory lock (which releases only on disconnect), release transaction and get to work
+        $dbh->commit();
 
         # Do work with url record
         handle_url( $ts, $url_row );
 
-        # Reset "lock" on url and mention record(s)
-        $url_unlock_sth->execute( $pid );
-        $mention_unlock_sth->execute( $pid );
+        # Remove advisory lock on url record
+        $url_unlock_sth->execute( $url_row->{'id'} );
         if ( $dbh->err ) {
             print "Database error occured: ", $dbh->errstr, "\n";
             $dbh->rollback();
         }
         else {
             $dbh->commit();
+            print "-" x 79, "\n";
         }
-
-        print "-" x 79, "\n";
 
     }
 
@@ -121,6 +102,8 @@ sub handle_url {
     my ($ts, $url_row) = @_;
 
     my $dbh = $ts->dbh;
+
+    print "Processing URL:" . $url_row->{'url'} . "\n";
 
     # Verify URL and update record ( in memory update as well )
     unless ( $url_row->{'is_verified'} ) {
@@ -136,8 +119,8 @@ sub handle_url {
     $dbh->pg_savepoint("handle_url");
 
     # Fetch all mentions of this URL and store (and remove) mention
-    my $sth = $dbh->prepare("SELECT * FROM mention WHERE verifier_process_id = ? AND url_id = ?");
-    $sth->execute( $$, $url_row->{'id'} );
+    my $sth = $dbh->prepare("SELECT * FROM mention WHERE url_id = ?");
+    $sth->execute( $url_row->{'id'} );
     if ( $dbh->err ) {
         print "Database error occured: ", $dbh->errstr, "\n";
         $dbh->pg_rollback_to("handle_url");
@@ -152,7 +135,7 @@ sub handle_url {
         $ts->store_mention( $mention_row, $url_row->{'verified_url_id'} );
     }
 
-    return;
+    return 1; # OK
 }
 
 sub verify_url {
@@ -336,7 +319,7 @@ EOM
     print "Content-Type: ", $content_type, "\n";
     print "Verified OK: ", $verified_url_id, "\n";
 
-    return;
+    return 1; # OK
 }
 
 1;
