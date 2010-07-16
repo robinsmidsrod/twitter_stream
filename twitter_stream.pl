@@ -22,8 +22,6 @@ exit;
 
 sub run {
 
-    my $ts = TwitterStream->new();
-
     my $timeout = 1;
     while ( 1 ) {
         last if $timeout >= 960; # Exit if more than 16 minutes has passed
@@ -31,7 +29,7 @@ sub run {
         sleep($timeout);
         eval {
             my $done = AnyEvent->condvar;
-            my $stream = init_stream($ts, $done, \$timeout);
+            my $stream = init_stream($done, \$timeout);
             $done->recv();
         };
         if ($@) {
@@ -43,7 +41,9 @@ sub run {
 }
 
 sub init_stream {
-    my ($ts, $done, $timeout_ref) = @_;
+    my ($done, $timeout_ref) = @_;
+
+    my $ts = TwitterStream->new();
 
     my $dbh = $ts->dbh;
 
