@@ -18,6 +18,12 @@ sub BUILD {
     die "Please specify 'track' in the [twitter] section of '"    . $self->config_file . "'\n" unless $self->twitter_track;
 }
 
+sub DEMOLISH {
+    my ($self) = @_;
+    print "Disconnecting from database...\n";
+    $self->dbh->disconnect();
+}
+
 has 'config_file' => (
     is => 'ro',
     isa => 'Path::Class::File',
@@ -79,6 +85,27 @@ has 'twitter_track' => (
     default => sub { return (shift)->config->{'twitter'}->{'track'}; },
 );
 
+has 'database_dsn' => (
+    is      => 'ro',
+    isa     => 'Str',
+    lazy    => 1,
+    default => sub { return (shift)->config->{'database'}->{'dsn'} || 'dbi:Pg:dbname=twitter_stream'; },
+);
+
+has 'database_username' => (
+    is      => 'ro',
+    isa     => 'Str',
+    lazy    => 1,
+    default => sub { return (shift)->config->{'database'}->{'username'} || ''; },
+);
+
+has 'database_password' => (
+    is      => 'ro',
+    isa     => 'Str',
+    lazy    => 1,
+    default => sub { return (shift)->config->{'database'}->{'password'} || ''; },
+);
+
 has 'dbh' => (
     is => 'ro',
     isa => 'DBI::db',
@@ -88,14 +115,9 @@ has 'dbh' => (
 sub _build_dbh {
     my ($self) = @_;
 
-    my $dbh = DBI->connect(
-        'dbi:Pg:dbname=twitter_stream',
-        "",
-        "",
-        {
-            AutoCommit => 0,
-        }
-    );
+    my $dbh = DBI->connect( $self->database_dsn, $self->database_username, $self->database_password, {
+        AutoCommit => 0,
+    });
     die("Can't connect to database!") unless $dbh;
 
     # Return data from DB already decoded as native perl string
