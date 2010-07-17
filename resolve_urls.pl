@@ -252,6 +252,27 @@ sub verify_url {
         return;
     }
 
+    if ( $res->code >= 400 and $res->code < 500 ) {
+        # Permanent URL error, delete URL + mention record(s)
+
+        print "HTTP error " . $res->code . " while fetching '" . $url_row->{'url'} . "'\n";
+
+        # Inform caller about result
+        $url_row->{'is_verified'} = 1;
+        $url_row->{'verify_failed'} = 1;
+
+        my $sth = $dbh->prepare("DELETE FROM url WHERE id = ?");
+        $sth->execute( $url_row->{'id'} );
+        if ( $dbh->err ) {
+            print "Database error occured: ", $dbh->errstr, "\n";
+            $dbh->pg_rollback_to("verify_url");
+        }
+
+        print "Deleted URL record " . $url_row->{'id'} . "\n";
+
+        return;
+    }
+
     if ( $res->code < 200 or $res->code >= 300 ) {
         # Fetch failed, we got something else than 2xx return code (we consider 3xx failure)
 
