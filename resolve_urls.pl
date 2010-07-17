@@ -128,6 +128,8 @@ EOM
         if ( $dbh->err ) {
             print "Database error occured: ", $dbh->errstr, "\n";
             $dbh->rollback();
+            print "Sleeping a little before trying again...\n";
+            sleep(1);
         }
         else {
             $dbh->commit();
@@ -144,7 +146,7 @@ sub handle_url {
 
     my $dbh = $ts->dbh;
 
-    print "Processing URL:" . $url_row->{'url'} . "\n";
+    print "Processing URL: " . $url_row->{'url'} . "\n";
 
     # Verify URL and update record ( in memory update as well )
     unless ( $url_row->{'verified_url_id'} ) {
@@ -157,23 +159,44 @@ sub handle_url {
         return;
     }
 
-    $dbh->pg_savepoint("handle_url");
+    # Finalize the changes we did in verification of the URL (if any)
+    if ( $dbh->err ) {
+        print "Database error occured: ", $dbh->errstr, "\n";
+        $dbh->rollback();
+        return;
+    }
+    else {
+        $dbh->commit();
+    }
 
     # Fetch all mentions of this URL and store (and remove) mention
     my $sth = $dbh->prepare("SELECT * FROM mention WHERE url_id = ?");
     $sth->execute( $url_row->{'id'} );
     if ( $dbh->err ) {
         print "Database error occured: ", $dbh->errstr, "\n";
-        $dbh->pg_rollback_to("handle_url");
+        $dbh->rollback();
         return;
     }
+    my @mentions;
     while ( my $mention_row = $sth->fetchrow_hashref() ) {
         if ( $dbh->err ) {
             print "Database error occured: ", $dbh->errstr, "\n";
-            $dbh->pg_rollback_to("handle_url");
+            $dbh->rollback();
             return;
         }
+        push @mentions, $mention_row;
+    }
+
+    foreach my $mention_row ( @mentions ) {
         $ts->store_mention( $mention_row, $url_row->{'verified_url_id'} );
+        if ( $dbh->err ) {
+            print "Database error occured: ", $dbh->errstr, "\n";
+            $dbh->rollback();
+            return;
+        }
+        else {
+            $dbh->commit();
+        }
     }
 
     return 1; # OK
