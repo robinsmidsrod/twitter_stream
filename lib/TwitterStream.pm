@@ -85,6 +85,19 @@ has 'twitter_track' => (
     default => sub { return (shift)->config->{'twitter'}->{'track'}; },
 );
 
+has 'twitter_keywords' => (
+    is         => 'ro',
+    isa        => 'ArrayRef[Str]',
+    lazy_build => 1,
+    auto_deref => 1,
+);
+
+sub _build_twitter_keywords {
+    my ($self) = @_;
+    my @keywords = split(/\s*,\s*/, $self->twitter_track);
+    return \@keywords;
+}
+
 has 'database_dsn' => (
     is      => 'ro',
     isa     => 'Str',
@@ -268,6 +281,53 @@ EOM
 
     print "Mention stored OK.\n";
     return;
+}
+
+sub get_mentions {
+    my ($self, $args) = @_;
+    my $precision = $args->{'precision'};
+    my $limit = $args->{'limit'} || 25;
+    my $age = $args->{'age'} || 0;
+
+    my $sql = <<"EOM";
+SELECT
+ m.mention_count,
+ vu.content_type,
+ vu.title,
+ vu.url,
+ vu.first_mention_id,
+ vu.first_mention_at,
+ vu.first_mention_by_name,
+ vu.first_mention_by_user
+FROM mention_$precision m JOIN verified_url vu ON m.verified_url_id = vu.id
+WHERE m.mention_at = DATE_TRUNC('$precision',(CURRENT_TIMESTAMP - INTERVAL '$age $precision'))
+ORDER BY m.mention_count DESC, vu.first_mention_at DESC
+LIMIT ?
+EOM
+
+    my $sth = $self->dbh->prepare($sql);
+    if ( $self->dbh->err ) {
+        warn("Database error occured: " . $self->dbh->errstr);
+        $self->dbh->rollback();
+        return [];
+    }
+    $sth->execute($limit);
+    if ( $self->dbh->err ) {
+        warn("Database error occured: " . $self->dbh->errstr);
+        $self->dbh->rollback();
+        return [];
+    }
+    my @mentions;
+    while ( my $mention = $sth->fetchrow_hashref() ) {
+        if ( $self->dbh->err ) {
+            warn("Database error occured: " . $self->dbh->errstr);
+            $self->dbh->rollback();
+            return [];
+        }
+        push @mentions, $mention;
+    }
+    $self->dbh->commit();
+    return \@mentions;
 }
 
 no Moose;
