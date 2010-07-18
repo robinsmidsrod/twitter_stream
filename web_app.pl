@@ -1,8 +1,9 @@
 #!/usr/bin/env perl
 
-
 use Mojolicious::Lite;
 use DateTime ();
+use Encode ();
+use utf8;
 
 use lib 'lib';
 use TwitterStream;
@@ -19,9 +20,13 @@ my $allowed_precision = {
 get '/' => sub {
     my $self = shift;
 
+    my $limit = $self->param('limit') ? ( int($self->param('limit')) || 25 ) : 25;
+    my $offset = $self->param('offset') ? ( int($self->param('offset')) || 0 ) : 0;
+
     my $links = $ts->get_mentions({
         precision => 'day',
-        limit     => 25,
+        limit     => $limit,
+        offset    => $offset,
         age       => 0,
     });
 
@@ -55,9 +60,13 @@ get '/:precision' => sub {
         return;
     }
 
+    my $limit = $self->param('limit') ? ( int($self->param('limit')) || 25 ) : 25;
+    my $offset = $self->param('offset') ? ( int($self->param('offset')) || 0 ) : 0;
+
     my $links = $ts->get_mentions({
         precision => $precision,
-        limit     => 25,
+        limit     => $limit,
+        offset    => $offset,
         age       => 0,
     });
 
@@ -101,9 +110,13 @@ get '/:precision/:date' => sub {
         $age = $duration->in_units('days') < 0 ? $age : $duration;
     }
 
+    my $limit = $self->param('limit') ? ( int($self->param('limit')) || 25 ) : 25;
+    my $offset = $self->param('offset') ? ( int($self->param('offset')) || 0 ) : 0;
+
     my $links = $ts->get_mentions({
         precision => $precision,
-        limit     => 25,
+        limit     => $limit,
+        offset    => $offset,
         age       => $age->in_units("${precision}s"),
     });
 
@@ -137,9 +150,67 @@ get '/:precision/:date' => sub {
 
 get '/:precision/:date/:keyword' => sub {
     my $self = shift;
+
+    (my $precision) = grep { $allowed_precision->{$_} } $self->param('precision');
+    unless ( $precision ) {
+        $self->render_not_found();
+        return;
+    }
+
+    my $today = DateTime->today( time_zone => 'UTC' );
+    my $age = DateTime::Duration->new( days => 0 );
+    if ( $self->param('date') =~ m/^(\d+)$/ ) {
+        $age = $1;
+        $age = DateTime::Duration->new( "${precision}s" => $age );
+    }
+
+    if ( $self->param('date') =~ m/^(\d{4})-(\d{1,2})-(\d{1,2})$/ ) {
+        my $year = $1;
+        my $month = $2;
+        my $day = $3;
+        my $then = DateTime->new( year => $year, month => $month, day => $day, time_zone => 'UTC' );
+        my $duration = $today->subtract_datetime( $then );
+        $age = $duration->in_units('days') < 0 ? $age : $duration;
+    }
+
+    my $keyword = $self->param('keyword') || "";
+
+    my $limit = $self->param('limit') ? ( int($self->param('limit')) || 25 ) : 25;
+    my $offset = $self->param('offset') ? ( int($self->param('offset')) || 0 ) : 0;
+
+    my $links = $ts->get_mentions({
+        precision => $precision,
+        limit     => $limit,
+        offset    => $offset,
+        age       => $age->in_units("${precision}s"),
+        keyword   => $keyword,
+    });
+
+    warn("Requested date: " . ( $today - $age ) . "\n");
+
+    my $title = "Most popular links about '" . $keyword . "' ";
+    $title .= 'today'            if $precision eq 'day' and $age->in_units('days') == 0;
+    $title .= 'yesterday'        if $precision eq 'day' and $age->in_units('days') == 1;
+    $title .= $age->in_units('days') . ' days ago' if $precision eq 'day' and $age->in_units('days') > 1;
+
+    $title .= 'this week'  if $precision eq 'week' and $age->in_units('weeks') == 0;
+    $title .= 'last week'  if $precision eq 'week' and $age->in_units('weeks') == 1;
+    $title .= $age->in_units('weeks') . ' weeks ago'  if $precision eq 'weeks' and $age->in_units('weeks') > 1;
+
+    $title .= 'this month' if $precision eq 'month' and $age->in_units('months') == 0;
+    $title .= 'last month' if $precision eq 'month' and $age->in_units('months') == 1;
+    $title .= $age->in_units('months') . ' months ago' if $precision eq 'month' and $age->in_units('months') > 1;
+
+    $title .= 'this year'  if $precision eq 'year' and $age->in_units('years') == 0;
+    $title .= 'last year'  if $precision eq 'year' and $age->in_units('years') == 1;
+    $title .= $age->in_units('years') . ' years ago'  if $precision eq 'year' and $age->in_units('years') > 1;
+
     $self->render(
-        text => $self->param('precision') . $self->param('date') . $self->param('keyword'),
-        layout => 'default',
+        template => 'linklist',
+        links    => $links,
+        keywords => scalar $ts->twitter_keywords,
+        title    => $title,
+        layout   => 'default',
     );
 };
 

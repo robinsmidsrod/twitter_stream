@@ -286,8 +286,10 @@ EOM
 sub get_mentions {
     my ($self, $args) = @_;
     my $precision = $args->{'precision'};
-    my $limit = $args->{'limit'} || 25;
-    my $age = $args->{'age'} || 0;
+    my $limit = int($args->{'limit'}) || 25;
+    my $offset =int($args->{'offset'}) || 0;
+    my $age = int($args->{'age'}) || 0;
+    my $keyword = $args->{'keyword'};
 
     my $sql = <<"EOM";
 SELECT
@@ -301,9 +303,31 @@ SELECT
  vu.first_mention_by_user
 FROM mention_$precision m JOIN verified_url vu ON m.verified_url_id = vu.id
 WHERE m.mention_at = DATE_TRUNC('$precision',(CURRENT_TIMESTAMP - INTERVAL '$age $precision'))
+ AND vu.is_off_topic = FALSE
 ORDER BY m.mention_count DESC, vu.first_mention_at DESC
 LIMIT ?
+OFFSET ?
 EOM
+    if ( $keyword ) {
+        $sql = <<"EOM";
+SELECT
+ m.mention_count,
+ vu.content_type,
+ vu.title,
+ vu.url,
+ vu.first_mention_id,
+ vu.first_mention_at,
+ vu.first_mention_by_name,
+ vu.first_mention_by_user
+FROM mention_${precision}_keyword m JOIN verified_url vu ON m.verified_url_id = vu.id
+WHERE m.mention_at = DATE_TRUNC('$precision',(CURRENT_TIMESTAMP - INTERVAL '$age $precision'))
+ AND vu.is_off_topic = FALSE
+ AND m.keyword_id = (SELECT id FROM keyword k WHERE k.keyword = ?)
+ORDER BY m.mention_count DESC, vu.first_mention_at DESC
+LIMIT ?
+OFFSET ?
+EOM
+    }
 
     my $sth = $self->dbh->prepare($sql);
     if ( $self->dbh->err ) {
@@ -311,12 +335,17 @@ EOM
         $self->dbh->rollback();
         return [];
     }
-    $sth->execute($limit);
+
+    my @params;
+    push @params, $keyword if $keyword;
+    push @params, $limit, $offset;
+    $sth->execute( @params );
     if ( $self->dbh->err ) {
         warn("Database error occured: " . $self->dbh->errstr);
         $self->dbh->rollback();
         return [];
     }
+
     my @mentions;
     while ( my $mention = $sth->fetchrow_hashref() ) {
         if ( $self->dbh->err ) {
