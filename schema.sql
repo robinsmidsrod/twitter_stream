@@ -179,7 +179,8 @@ CREATE TABLE verified_url (
     first_mention_id bigint NOT NULL,
     first_mention_at timestamp(0) with time zone NOT NULL,
     first_mention_by_name character varying(100) NOT NULL,
-    first_mention_by_user character varying(100) NOT NULL
+    first_mention_by_user character varying(100) NOT NULL,
+    is_off_topic boolean DEFAULT false NOT NULL
 );
 
 
