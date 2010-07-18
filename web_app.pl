@@ -269,10 +269,11 @@ Not a valid page, please check the link for errors.
 
 @@ stylesheet.css.ep
 body { margin: 0 auto; max-width: 50em; font-family: sans-serif; line-height: 1.5em; }
+a { text-decoration: none; }
 ul.links { list-style-type: none; padding-left: 0; }
 li.link { padding: 1em; margin-bottom: 0.5em; background: #eee; border-radius: 10px; -moz-border-radius: 10px; -webkit-border-radius: 10px; position: relative; }
 div.mention_count { position: absolute; width: 2.5em; overflow: none; background-color: black; color: yellow; border-radius: 5px; -moz-border-radius: 5px; -webkit-border-radius: 5px; text-align: center; padding: 0.5em; font-size: 125%; }
-div.mention_title { margin-left: 5em; }
+div.mention_title { margin-left: 5em; font-weight: bold; }
 div.mention_who   { margin-left: 5em; }
 div.mention_url   { }
 ul.keywords { display: inline; list-style-type: none; padding-left: 0; }
