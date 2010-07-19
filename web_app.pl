@@ -351,6 +351,7 @@ Not a valid page, please check the link for errors.
  <head>
   <title><%= $title %></title>
   <link rel="stylesheet" type="text/css" href="<%= url_for 'stylesheet' %>">
+  <meta http-equiv="Content-Type" content="text/html; charset=utf8">
  </head>
  <body>
 <h1><%== $title %></h1>
