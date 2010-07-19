@@ -10,6 +10,9 @@ use TwitterStream;
 
 my $ts = TwitterStream->new();
 
+# Set the Mojolicious session secret
+app->secret( $ts->webapp_secret );
+
 my $allowed_precision = {
     'day'   => 1,
     'week'  => 1,
@@ -23,7 +26,7 @@ get '/' => sub {
     my $limit = $self->param('limit') ? ( int($self->param('limit')) || 25 ) : 25;
     my $offset = $self->param('offset') ? ( int($self->param('offset')) || 0 ) : 0;
 
-    my $links = $ts->get_mentions({
+    my $links = $ts->get_links({
         precision => 'day',
         limit     => $limit,
         offset    => $offset,
@@ -51,6 +54,65 @@ get '/keywords' => sub {
     );
 };
 
+get '/offtopic' => sub {
+    my ($self) = @_;
+
+    my $limit = $self->param('limit') ? ( int($self->param('limit')) || 100 ) : 100;
+    my $offset = $self->param('offset') ? ( int($self->param('offset')) || 0 ) : 0;
+
+    my $links = $ts->get_offtopic_links({
+        limit     => $limit,
+        offset    => $offset,
+    });
+
+    $self->render(
+        template => 'linklist',
+        links    => $links,
+        keywords => scalar $ts->twitter_keywords,
+        title    => 'Most recent off-topic links',
+        layout   => 'default',
+    );
+};
+
+get '/offtopic/:id' => sub {
+    my ($self) = @_;
+
+    my $link = $ts->get_link( $self->param('id') );
+    unless ( ref($link) eq 'HASH' and keys %$link > 0 ) {
+        $self->render_not_found();
+        return;
+    }
+
+    $self->render(
+        template => 'offtopic_link',
+        link     => $link,
+        title    => 'Is this link off-topic?',
+        layout   => 'default',
+    );
+};
+
+post '/offtopic/:id' => sub {
+    my ($self) = @_;
+
+    $ts->update_link_status(
+        $self->param('id'),
+        ( $self->param('decision') ? 1 : 0 ),
+    );
+
+    my $link = $ts->get_link( $self->param('id') );
+    unless ( ref($link) eq 'HASH' and keys %$link > 0 ) {
+        $self->render_not_found();
+        return;
+    }
+
+    $self->render(
+        template => 'offtopic_link',
+        link     => $link,
+        title    => 'Is this link off-topic?',
+        layout   => 'default',
+    );
+};
+
 get '/:precision' => sub {
     my $self = shift;
 
@@ -63,7 +125,7 @@ get '/:precision' => sub {
     my $limit = $self->param('limit') ? ( int($self->param('limit')) || 25 ) : 25;
     my $offset = $self->param('offset') ? ( int($self->param('offset')) || 0 ) : 0;
 
-    my $links = $ts->get_mentions({
+    my $links = $ts->get_links({
         precision => $precision,
         limit     => $limit,
         offset    => $offset,
@@ -113,7 +175,7 @@ get '/:precision/:date' => sub {
     my $limit = $self->param('limit') ? ( int($self->param('limit')) || 25 ) : 25;
     my $offset = $self->param('offset') ? ( int($self->param('offset')) || 0 ) : 0;
 
-    my $links = $ts->get_mentions({
+    my $links = $ts->get_links({
         precision => $precision,
         limit     => $limit,
         offset    => $offset,
@@ -178,7 +240,7 @@ get '/:precision/:date/:keyword' => sub {
     my $limit = $self->param('limit') ? ( int($self->param('limit')) || 25 ) : 25;
     my $offset = $self->param('offset') ? ( int($self->param('offset')) || 0 ) : 0;
 
-    my $links = $ts->get_mentions({
+    my $links = $ts->get_links({
         precision => $precision,
         limit     => $limit,
         offset    => $offset,
@@ -227,13 +289,42 @@ __DATA__
 </ul>
 </div>
 
+@@ offtopic_link.html.ep
+<form class="offtopic_question" action="/offtopic/<%= $link->{'id'} %>" method="post">
+<div>
+<button type="submit" name="decision" value="1">Yes</button>
+<button type="submit" name="decision" value="0">No</button>
+The link is currently tagged as <strong><%= $link->{'is_off_topic'} ? 'off-topic' : 'on-topic' %></strong>.
+</div>
+</form>
+<div class="links">
+<ul class="links">
+<li class="link">
+<%== include 'link' %>
+</li>
+</ul>
+<iframe class="link" src="<%= $link->{'url'} %>" width="100%" height="500"></iframe>
+
 @@ linklist.html.ep
 <div class="links">
 <ul class="links">
 % foreach my $link ( @$links ) {
 <li class="link">
+<%== include 'link', link => $link %>
+</li>
+% }
+</ul>
+</div>
+<%== include 'keywords' %>
+
+@@ link.html.ep
 <div class="mention_count">
+% if ( $link->{'mention_count'} ) {
 <%= $link->{'mention_count'} %>
+% }
+% else {
+N/A
+% }
 </div>
 <div class="mention_title">
 <a href="<%= $link->{'url'} %>"><%= $link->{'title'} || 'Unknown title (something of type ' . $link->{'content_type'} . ')' %></a>
@@ -244,11 +335,11 @@ First mentioned by <a href="<%= 'http://twitter.com/' . $link->{'first_mention_b
 <div class="mention_url">
 <a href="<%= $link->{'url'} %>"><%= $link->{'url'} %></a>
 </div>
-</li>
-% }
-</ul>
+% if ( not exists $link->{'is_off_topic'} ) {
+<div class="offtopic">
+<a href="/offtopic/<%= $link->{'id'} %>">Off-topic?</a>
 </div>
-<%== include 'keywords' %>
+% }
 
 @@ not_found.html.ep
 % layout 'default', title => 'Not Found';
@@ -274,7 +365,11 @@ ul.links { list-style-type: none; padding-left: 0; }
 li.link { padding: 1em; margin-bottom: 0.5em; background: #eee; border-radius: 10px; -moz-border-radius: 10px; -webkit-border-radius: 10px; position: relative; }
 div.mention_count { position: absolute; width: 2.5em; overflow: none; background-color: black; color: yellow; border-radius: 5px; -moz-border-radius: 5px; -webkit-border-radius: 5px; text-align: center; padding: 0.5em; font-size: 125%; }
 div.mention_title { margin-left: 5em; font-weight: bold; }
-div.mention_who   { margin-left: 5em; }
-div.mention_url   { }
+div.mention_who   { margin-left: 5em; margin-right: 5.5em; }
+div.mention_url   { margin-right: 5.5em; }
 ul.keywords { display: inline; list-style-type: none; padding-left: 0; }
 li.keyword { display: inline; margin-right: 0.075em; padding: 0.125em 1em; background-color: blue; color: yellow; border-radius: 5px; -moz-border-radius: 5px; -webkit-border-radius: 5px; }
+form.offtopic_question button { font-size: 150%; }
+form.offtopic_question strong { font-size: 125%; }
+div.offtopic { position: absolute; right: 0.5em; bottom: 0.5em; overflow: none; background-color: #ddd; border-radius: 5px; -moz-border-radius: 5px; -webkit-border-radius: 5px; text-align: center; padding: 0.5em; }
+div.offtopic a { font-weight: bold; }

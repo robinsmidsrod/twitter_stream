@@ -142,6 +142,13 @@ sub _build_dbh {
     return $dbh;
 }
 
+has 'webapp_secret' => (
+    is      => 'ro',
+    isa     => 'Str',
+    lazy    => 1,
+    default => sub { return (shift)->config->{'webapp'}->{'secret'}; },
+);
+
 has '_uuid_generator' => (
     is      => 'ro',
     isa     => 'Data::UUID',
@@ -283,7 +290,7 @@ EOM
     return;
 }
 
-sub get_mentions {
+sub get_links {
     my ($self, $args) = @_;
     my $precision = $args->{'precision'};
     my $limit = int($args->{'limit'}) || 25;
@@ -300,7 +307,8 @@ SELECT
  vu.first_mention_id,
  vu.first_mention_at,
  vu.first_mention_by_name,
- vu.first_mention_by_user
+ vu.first_mention_by_user,
+ vu.id
 FROM mention_$precision m JOIN verified_url vu ON m.verified_url_id = vu.id
 WHERE m.mention_at = DATE_TRUNC('$precision',(CURRENT_TIMESTAMP - INTERVAL '$age $precision'))
  AND vu.is_off_topic = FALSE
@@ -318,7 +326,8 @@ SELECT
  vu.first_mention_id,
  vu.first_mention_at,
  vu.first_mention_by_name,
- vu.first_mention_by_user
+ vu.first_mention_by_user,
+ vu.id
 FROM mention_${precision}_keyword m JOIN verified_url vu ON m.verified_url_id = vu.id
 WHERE m.mention_at = DATE_TRUNC('$precision',(CURRENT_TIMESTAMP - INTERVAL '$age $precision'))
  AND vu.is_off_topic = FALSE
@@ -346,17 +355,114 @@ EOM
         return [];
     }
 
-    my @mentions;
-    while ( my $mention = $sth->fetchrow_hashref() ) {
+    my @links;
+    while ( my $link = $sth->fetchrow_hashref() ) {
         if ( $self->dbh->err ) {
             warn("Database error occured: " . $self->dbh->errstr);
             $self->dbh->rollback();
             return [];
         }
-        push @mentions, $mention;
+        push @links, $link;
     }
     $self->dbh->commit();
-    return \@mentions;
+    return \@links;
+}
+
+sub get_offtopic_links {
+    my ($self, $args) = @_;
+    my $limit = int($args->{'limit'}) || 100;
+    my $offset =int($args->{'offset'}) || 0;
+
+    my $sql = <<"EOM";
+SELECT
+ 'N/A' AS mention_count,
+ vu.content_type,
+ vu.title,
+ vu.url,
+ vu.first_mention_id,
+ vu.first_mention_at,
+ vu.first_mention_by_name,
+ vu.first_mention_by_user,
+ vu.id
+FROM verified_url vu
+WHERE vu.is_off_topic = TRUE
+ORDER BY vu.verified_at DESC
+LIMIT ?
+OFFSET ?
+EOM
+
+    my $sth = $self->dbh->prepare($sql);
+    if ( $self->dbh->err ) {
+        warn("Database error occured: " . $self->dbh->errstr);
+        $self->dbh->rollback();
+        return [];
+    }
+
+    $sth->execute( $limit, $offset );
+    if ( $self->dbh->err ) {
+        warn("Database error occured: " . $self->dbh->errstr);
+        $self->dbh->rollback();
+        return [];
+    }
+
+    my @links;
+    while ( my $link = $sth->fetchrow_hashref() ) {
+        if ( $self->dbh->err ) {
+            warn("Database error occured: " . $self->dbh->errstr);
+            $self->dbh->rollback();
+            return [];
+        }
+        push @links, $link;
+    }
+    $self->dbh->commit();
+
+    return \@links;
+}
+
+sub get_link {
+    my ($self, $id) = @_;
+
+    my $sth = $self->dbh->prepare('SELECT * FROM verified_url WHERE id = ?');
+    if ( $self->dbh->err ) {
+        warn("Database error occured: " . $self->dbh->errstr);
+        $self->dbh->rollback();
+        return {};
+    }
+
+    $sth->execute($id);
+    if ( $self->dbh->err ) {
+        warn("Database error occured: " . $self->dbh->errstr);
+        $self->dbh->rollback();
+        return {};
+    }
+
+    my $link = $sth->fetchrow_hashref();
+    if ( $self->dbh->err ) {
+        warn("Database error occured: " . $self->dbh->errstr);
+        $self->dbh->rollback();
+        return {};
+    }
+    $self->dbh->commit();
+
+    return $link;
+}
+
+sub update_link_status {
+    my ($self, $id, $decision) = @_;
+    my $sth = $self->dbh->prepare("UPDATE verified_url SET is_off_topic = ? WHERE ID = ?");
+    if ( $self->dbh->err ) {
+        warn("Database error occured: " . $self->dbh->errstr);
+        $self->dbh->rollback();
+        return;
+    }
+    $sth->execute( ( $decision ? 1 : 0 ), $id );
+    if ( $self->dbh->err ) {
+        warn("Database error occured: " . $self->dbh->errstr);
+        $self->dbh->rollback();
+        return;
+    }
+    $self->dbh->commit();
+    return 1; # OK
 }
 
 no Moose;
