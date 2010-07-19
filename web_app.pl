@@ -12,6 +12,10 @@ my $ts = TwitterStream->new();
 
 # Set the Mojolicious session secret
 app->secret( $ts->webapp_secret );
+# Set default UTF8 charset for some types
+app->types->type( html => 'text/html; charset=utf8' );
+app->types->type( css  => 'text/css; charset=utf8' );
+app->types->type( js   => 'text/javascript; charset=utf8' );
 
 my $allowed_precision = {
     'day'   => 1,
@@ -351,7 +355,6 @@ Not a valid page, please check the link for errors.
  <head>
   <title><%= $title %></title>
   <link rel="stylesheet" type="text/css" href="<%= url_for 'stylesheet' %>">
-  <meta http-equiv="Content-Type" content="text/html; charset=utf8">
  </head>
  <body>
 <h1><%== $title %></h1>
