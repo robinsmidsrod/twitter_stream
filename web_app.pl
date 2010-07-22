@@ -27,21 +27,27 @@ my $allowed_precision = {
 get '/' => sub {
     my $self = shift;
 
-    my $limit = $self->param('limit') ? ( int($self->param('limit')) || 25 ) : 25;
-    my $offset = $self->param('offset') ? ( int($self->param('offset')) || 0 ) : 0;
+    my $precision = 'day',
+    my $limit = calc_limit($self->param('limit'));
+    my $offset = calc_offset($self->param('offset'));
+    my $age = calc_age($precision);
+    my $title = calc_title( $precision, $age );
 
     my $links = $ts->get_links({
-        precision => 'day',
+        precision => $precision,
         limit     => $limit,
         offset    => $offset,
-        age       => 0,
+        age       => $age->in_units("${precision}s"),
     });
 
     $self->render(
         template => 'linklist',
         links    => $links,
         keywords => scalar $ts->twitter_keywords,
-        title    => 'Most popular links today',
+        title    => $title,
+        precision => $precision,
+        today     => today(),
+        age       => $age,
         layout   => 'default',
     );
 };
@@ -61,8 +67,8 @@ get '/keywords' => sub {
 get '/offtopic' => sub {
     my ($self) = @_;
 
-    my $limit = $self->param('limit') ? ( int($self->param('limit')) || 100 ) : 100;
-    my $offset = $self->param('offset') ? ( int($self->param('offset')) || 0 ) : 0;
+    my $limit = calc_limit($self->param('limit'));
+    my $offset = calc_offset($self->param('offset'));
 
     my $links = $ts->get_offtopic_links({
         limit     => $limit,
@@ -126,27 +132,26 @@ get '/:precision' => sub {
         return;
     }
 
-    my $limit = $self->param('limit') ? ( int($self->param('limit')) || 25 ) : 25;
-    my $offset = $self->param('offset') ? ( int($self->param('offset')) || 0 ) : 0;
+    my $limit = calc_limit($self->param('limit'));
+    my $offset = calc_offset($self->param('offset'));
+    my $age = calc_age( $precision );
+    my $title = calc_title($precision, $age);
 
     my $links = $ts->get_links({
         precision => $precision,
         limit     => $limit,
         offset    => $offset,
-        age       => 0,
+        age       => $age->in_units("${precision}s"),
     });
-
-    my $title = "Most popular links ";
-    $title .= 'today'      if $precision eq 'day';
-    $title .= 'this week'  if $precision eq 'week';
-    $title .= 'this month' if $precision eq 'month';
-    $title .= 'this year'  if $precision eq 'year';
 
     $self->render(
         template => 'linklist',
         links    => $links,
         keywords => scalar $ts->twitter_keywords,
         title    => $title,
+        precision => $precision,
+        today     => today(),
+        age       => $age,
         layout   => 'default',
     );
 };
@@ -160,24 +165,10 @@ get '/:precision/:date' => sub {
         return;
     }
 
-    my $today = DateTime->today( time_zone => 'UTC' );
-    my $age = DateTime::Duration->new( days => 0 );
-    if ( $self->param('date') =~ m/^(\d+)$/ ) {
-        $age = $1;
-        $age = DateTime::Duration->new( "${precision}s" => $age );
-    }
-
-    if ( $self->param('date') =~ m/^(\d{4})-(\d{1,2})-(\d{1,2})$/ ) {
-        my $year = $1;
-        my $month = $2;
-        my $day = $3;
-        my $then = DateTime->new( year => $year, month => $month, day => $day, time_zone => 'UTC' );
-        my $duration = $today->subtract_datetime( $then );
-        $age = $duration->in_units('days') < 0 ? $age : $duration;
-    }
-
-    my $limit = $self->param('limit') ? ( int($self->param('limit')) || 25 ) : 25;
-    my $offset = $self->param('offset') ? ( int($self->param('offset')) || 0 ) : 0;
+    my $age = calc_age( $precision, $self->param('date') );
+    my $limit = calc_limit($self->param('limit'));
+    my $offset = calc_offset($self->param('offset'));
+    my $title = calc_title($precision, $age);
 
     my $links = $ts->get_links({
         precision => $precision,
@@ -186,30 +177,14 @@ get '/:precision/:date' => sub {
         age       => $age->in_units("${precision}s"),
     });
 
-    warn("Requested date: " . ( $today - $age ) . "\n");
-
-    my $title = "Most popular links ";
-    $title .= 'today'            if $precision eq 'day' and $age->in_units('days') == 0;
-    $title .= 'yesterday'        if $precision eq 'day' and $age->in_units('days') == 1;
-    $title .= $age->in_units('days') . ' days ago' if $precision eq 'day' and $age->in_units('days') > 1;
-
-    $title .= 'this week'  if $precision eq 'week' and $age->in_units('weeks') == 0;
-    $title .= 'last week'  if $precision eq 'week' and $age->in_units('weeks') == 1;
-    $title .= $age->in_units('weeks') . ' weeks ago'  if $precision eq 'weeks' and $age->in_units('weeks') > 1;
-
-    $title .= 'this month' if $precision eq 'month' and $age->in_units('months') == 0;
-    $title .= 'last month' if $precision eq 'month' and $age->in_units('months') == 1;
-    $title .= $age->in_units('months') . ' months ago' if $precision eq 'month' and $age->in_units('months') > 1;
-
-    $title .= 'this year'  if $precision eq 'year' and $age->in_units('years') == 0;
-    $title .= 'last year'  if $precision eq 'year' and $age->in_units('years') == 1;
-    $title .= $age->in_units('years') . ' years ago'  if $precision eq 'year' and $age->in_units('years') > 1;
-
     $self->render(
         template => 'linklist',
         links    => $links,
         keywords => scalar $ts->twitter_keywords,
         title    => $title,
+        precision => $precision,
+        today     => today(),
+        age       => $age,
         layout   => 'default',
     );
 };
@@ -223,26 +198,11 @@ get '/:precision/:date/:keyword' => sub {
         return;
     }
 
-    my $today = DateTime->today( time_zone => 'UTC' );
-    my $age = DateTime::Duration->new( days => 0 );
-    if ( $self->param('date') =~ m/^(\d+)$/ ) {
-        $age = $1;
-        $age = DateTime::Duration->new( "${precision}s" => $age );
-    }
-
-    if ( $self->param('date') =~ m/^(\d{4})-(\d{1,2})-(\d{1,2})$/ ) {
-        my $year = $1;
-        my $month = $2;
-        my $day = $3;
-        my $then = DateTime->new( year => $year, month => $month, day => $day, time_zone => 'UTC' );
-        my $duration = $today->subtract_datetime( $then );
-        $age = $duration->in_units('days') < 0 ? $age : $duration;
-    }
-
+    my $age = calc_age( $precision, $self->param('date') );
     my $keyword = $self->param('keyword') || "";
-
-    my $limit = $self->param('limit') ? ( int($self->param('limit')) || 25 ) : 25;
-    my $offset = $self->param('offset') ? ( int($self->param('offset')) || 0 ) : 0;
+    my $limit = calc_limit($self->param('limit'));
+    my $offset = calc_offset($self->param('offset'));
+    my $title = calc_title($precision, $age, $keyword);
 
     my $links = $ts->get_links({
         precision => $precision,
@@ -252,9 +212,62 @@ get '/:precision/:date/:keyword' => sub {
         keyword   => $keyword,
     });
 
-    warn("Requested date: " . ( $today - $age ) . "\n");
+    $self->render(
+        template => 'linklist',
+        links    => $links,
+        keywords => scalar $ts->twitter_keywords,
+        title    => $title,
+        precision => $precision,
+        today     => today(),
+        age       => $age,
+        layout   => 'default',
+    );
+};
 
-    my $title = "Most popular links about '" . $keyword . "' ";
+app->start;
+
+################### helper functions ###########################
+
+sub today {
+    return scalar DateTime->today( time_zone => 'UTC' );
+}
+
+sub calc_age {
+    my ($precision, $date) = @_;
+
+    my $zero_duration = DateTime::Duration->new( days => 0 );
+    return scalar $zero_duration unless $date;
+
+    my $today = today();
+
+    # String looks like an offset, just turn it into a duration object of the given precision
+    if ( $date =~ m/^(\d+)$/ ) {
+        my $age = $1;
+        return scalar DateTime::Duration->new( "${precision}s" => $age );
+    }
+
+    # String looks like an ISO date, calculate difference between today and that
+    if ( $date =~ m/^(\d{4})-(\d{1,2})-(\d{1,2})$/ ) {
+        my $year = $1;
+        my $month = $2;
+        my $day = $3;
+        my $then = DateTime->new( year => $year, month => $month, day => $day, time_zone => 'UTC' );
+        my $duration = $today->subtract_datetime( $then );
+        return scalar ( $duration->in_units('days') < 0 ? $zero_duration : $duration );
+    }
+
+    return scalar $zero_duration;
+}
+
+sub calc_title {
+    my ($precision, $age, $keyword) = @_;
+
+    my $title = "Most popular links ";
+
+    if ( $keyword ) {
+        $title = "Most popular links about '" . $keyword . "' ";
+    }
+
     $title .= 'today'            if $precision eq 'day' and $age->in_units('days') == 0;
     $title .= 'yesterday'        if $precision eq 'day' and $age->in_units('days') == 1;
     $title .= $age->in_units('days') . ' days ago' if $precision eq 'day' and $age->in_units('days') > 1;
@@ -271,19 +284,23 @@ get '/:precision/:date/:keyword' => sub {
     $title .= 'last year'  if $precision eq 'year' and $age->in_units('years') == 1;
     $title .= $age->in_units('years') . ' years ago'  if $precision eq 'year' and $age->in_units('years') > 1;
 
-    $self->render(
-        template => 'linklist',
-        links    => $links,
-        keywords => scalar $ts->twitter_keywords,
-        title    => $title,
-        layout   => 'default',
-    );
-};
+    return $title;
+}
 
-app->start;
+sub calc_limit {
+    my ($param) = @_;
+    return $param ? ( int($param) || 25 ) : 25;
+}
+
+sub calc_offset {
+    my ($param) = @_;
+    return $param ? ( int($param) || 0 ) : 0;
+}
+
 __DATA__
 
 @@ keywords.html.ep
+% if ( exists stash->{'keywords'} ) {
 <div class="keywords">
 <h2>Keywords being tracked</h2>
 <ul class="keywords">
@@ -292,6 +309,7 @@ __DATA__
 % }
 </ul>
 </div>
+% }
 
 @@ offtopic_link.html.ep
 <form class="offtopic_question" action="/offtopic/<%= $link->{'id'} %>" method="post">
@@ -309,8 +327,28 @@ The link is currently tagged as <strong><%= $link->{'is_off_topic'} ? 'off-topic
 </ul>
 <iframe class="link" src="<%= $link->{'url'} %>" width="100%" height="500"></iframe>
 
+@@ navigation.html.ep
+% if ( exists stash->{'today'} ) {
+<div class="nav">
+<table summary="Navigation">
+<tbody>
+% foreach my $precision_type ( qw(day week month year) ) {
+<tr>
+<td><a href="/<%= $precision_type %>/"><%= $precision_type . " -1" %></a></td>
+<td class="<%= $precision_type eq $precision ? 'highlight' : '' %>"><a href="/<%= $precision_type %>/"><%= $precision_type %></a></td>
+<td><a href="/<%= $precision_type %>/"><%= $precision_type . " +1" %></a></td>
+</tr>
+% }
+</tbody>
+</table>
+</div>
+% }
+
 @@ linklist.html.ep
 <div class="links">
+% if ( scalar @$links == 0 ) {
+<span class="zero_records">No links found. Please try another time period.</span>
+% }
 <ul class="links">
 % foreach my $link ( @$links ) {
 <li class="link">
@@ -357,7 +395,9 @@ Not a valid page, please check the link for errors.
   <link rel="stylesheet" type="text/css" href="<%= url_for 'stylesheet' %>">
  </head>
  <body>
-<h1><%== $title %></h1>
+<h1><a href="/">Links mentioned on Twitter</a></h1>
+<%== include 'navigation' %>
+<h2><%== $title %></h2>
 <%== content %>
  </body>
 </html>
@@ -377,3 +417,6 @@ form.offtopic_question button { font-size: 150%; }
 form.offtopic_question strong { font-size: 125%; }
 div.offtopic { position: absolute; right: 0.5em; bottom: 0.5em; overflow: none; background-color: #ddd; border-radius: 5px; -moz-border-radius: 5px; -webkit-border-radius: 5px; text-align: center; padding: 0.5em; }
 div.offtopic a { font-weight: bold; }
+div.nav { position: absolute; right: 0; top: 0; z-index: 1; margin: 0.5em; border: solid 1px black; border-radius: 5px; -moz-border-radius: 5px; -webkit-border-radius: 5px; background-color: #fafafa; }
+span.zero_records { background: #f88; padding: 0.25em; border-radius: 5px; -moz-border-radius: 5px; -webkit-border-radius: 5px; }
+td.highlight { font-weight: bold; }
