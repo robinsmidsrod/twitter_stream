@@ -52,7 +52,7 @@ get '/' => sub {
     );
 };
 
-get '/:precision' => sub {
+get '/(.precision)' => [ precision => qr/day|week|month|year/ ] => sub {
     my $self = shift;
 
     (my $precision) = grep { $allowed_precision->{$_} } $self->param('precision');
@@ -85,7 +85,7 @@ get '/:precision' => sub {
     );
 };
 
-get '/:precision/:date' => sub {
+get '/(.precision)/(.date)' => [ precision => qr/day|week|month|year/ ] => sub {
     my $self = shift;
 
     (my $precision) = grep { $allowed_precision->{$_} } $self->param('precision');
@@ -118,7 +118,7 @@ get '/:precision/:date' => sub {
     );
 };
 
-get '/:precision/:date/:keyword' => sub {
+get '/(.precision)/(.date)/(*keyword)' => [ precision => qr/day|week|month|year/ ] => sub {
     my $self = shift;
 
     (my $precision) = grep { $allowed_precision->{$_} } $self->param('precision');
@@ -173,7 +173,7 @@ get '/offtopic' => sub {
     );
 };
 
-get '/offtopic/:id' => sub {
+get '/offtopic/(.id)' => sub {
     my ($self) = @_;
 
     my $link = $ts->get_link( $self->param('id') );
@@ -190,7 +190,7 @@ get '/offtopic/:id' => sub {
     );
 };
 
-post '/offtopic/:id' => sub {
+post '/offtopic/(.id)' => sub {
     my ($self) = @_;
 
     $ts->update_link_status(
@@ -222,7 +222,7 @@ get '/keywords' => sub {
     );
 };
 
-get '/style.css' => 'stylesheet';
+get '/style.css' => 'style';
 
 app->start;
 
@@ -302,7 +302,9 @@ __DATA__
 @@ keywords.html.ep
 % if ( exists stash->{'keywords'} ) {
 <div class="keywords">
+% unless ( $title eq 'Keywords being tracked' ) {
 <h2>Keywords being tracked</h2>
+% }
 <ul class="keywords">
 % foreach my $keyword ( sort @$keywords ) {
 <li class="keyword"><%= $keyword %></li>
@@ -328,14 +330,14 @@ The link is currently tagged as <strong><%= $link->{'is_off_topic'} ? 'off-topic
 <iframe class="link" src="<%= $link->{'url'} %>" width="100%" height="500"></iframe>
 
 @@ navigation.html.ep
-% if ( exists stash->{'today'} ) {
+% if ( exists stash->{'today'} and exists stash->{'precision'} ) {
 <div class="nav">
 <table summary="Navigation">
 <tbody>
 % foreach my $precision_type ( qw(day week month year) ) {
 <tr>
 <td><a href="/<%= $precision_type %>/"><%= $precision_type . " -1" %></a></td>
-<td class="<%= $precision_type eq $precision ? 'highlight' : '' %>"><a href="/<%= $precision_type %>/"><%= $precision_type %></a></td>
+<td class="<%= $precision_type eq stash->{'precision'} ? 'highlight' : '' %>"><a href="/<%= $precision_type %>/"><%= $precision_type %></a></td>
 <td><a href="/<%= $precision_type %>/"><%= $precision_type . " +1" %></a></td>
 </tr>
 % }
@@ -392,7 +394,7 @@ Not a valid page, please check the link for errors.
 <html>
  <head>
   <title><%= $title %></title>
-  <link rel="stylesheet" type="text/css" href="<%= url_for 'stylesheet' %>">
+  <link rel="stylesheet" type="text/css" href="<%= url_for 'style' %>">
  </head>
  <body>
 <h1><a href="/">Links mentioned on Twitter</a></h1>
@@ -402,7 +404,7 @@ Not a valid page, please check the link for errors.
  </body>
 </html>
 
-@@ stylesheet.css.ep
+@@ style.css.ep
 body { margin: 0 auto; max-width: 50em; font-family: sans-serif; line-height: 1.5em; }
 a { text-decoration: none; }
 ul.links { list-style-type: none; padding-left: 0; }
