@@ -52,77 +52,6 @@ get '/' => sub {
     );
 };
 
-get '/style.css' => 'stylesheet';
-
-get '/keywords' => sub {
-    my $self = shift;
-    $self->render(
-        template => 'keywords',
-        keywords => scalar $ts->twitter_keywords,
-        title    => 'Keywords being tracked',
-        layout   => 'default',
-    );
-};
-
-get '/offtopic' => sub {
-    my ($self) = @_;
-
-    my $limit = calc_limit($self->param('limit'));
-    my $offset = calc_offset($self->param('offset'));
-
-    my $links = $ts->get_offtopic_links({
-        limit     => $limit,
-        offset    => $offset,
-    });
-
-    $self->render(
-        template => 'linklist',
-        links    => $links,
-        keywords => scalar $ts->twitter_keywords,
-        title    => 'Most recent off-topic links',
-        layout   => 'default',
-    );
-};
-
-get '/offtopic/:id' => sub {
-    my ($self) = @_;
-
-    my $link = $ts->get_link( $self->param('id') );
-    unless ( ref($link) eq 'HASH' and keys %$link > 0 ) {
-        $self->render_not_found();
-        return;
-    }
-
-    $self->render(
-        template => 'offtopic_link',
-        link     => $link,
-        title    => 'Is this link off-topic?',
-        layout   => 'default',
-    );
-};
-
-post '/offtopic/:id' => sub {
-    my ($self) = @_;
-
-    $ts->update_link_status(
-        $self->param('id'),
-        ( $self->param('decision') ? 1 : 0 ),
-    );
-
-    my $link = $ts->get_link( $self->param('id') );
-    unless ( ref($link) eq 'HASH' and keys %$link > 0 ) {
-        $self->render_not_found();
-        return;
-    }
-
-    $self->render(
-        template => 'offtopic_link',
-        link     => $link,
-        title    => 'Is this link off-topic?',
-        layout   => 'default',
-    );
-};
-
 get '/:precision' => sub {
     my $self = shift;
 
@@ -223,6 +152,77 @@ get '/:precision/:date/:keyword' => sub {
         layout   => 'default',
     );
 };
+
+get '/offtopic' => sub {
+    my ($self) = @_;
+
+    my $limit = calc_limit($self->param('limit'));
+    my $offset = calc_offset($self->param('offset'));
+
+    my $links = $ts->get_offtopic_links({
+        limit     => $limit,
+        offset    => $offset,
+    });
+
+    $self->render(
+        template => 'linklist',
+        links    => $links,
+        keywords => scalar $ts->twitter_keywords,
+        title    => 'Most recent off-topic links',
+        layout   => 'default',
+    );
+};
+
+get '/offtopic/:id' => sub {
+    my ($self) = @_;
+
+    my $link = $ts->get_link( $self->param('id') );
+    unless ( ref($link) eq 'HASH' and keys %$link > 0 ) {
+        $self->render_not_found();
+        return;
+    }
+
+    $self->render(
+        template => 'offtopic_link',
+        link     => $link,
+        title    => 'Is this link off-topic?',
+        layout   => 'default',
+    );
+};
+
+post '/offtopic/:id' => sub {
+    my ($self) = @_;
+
+    $ts->update_link_status(
+        $self->param('id'),
+        ( $self->param('decision') ? 1 : 0 ),
+    );
+
+    my $link = $ts->get_link( $self->param('id') );
+    unless ( ref($link) eq 'HASH' and keys %$link > 0 ) {
+        $self->render_not_found();
+        return;
+    }
+
+    $self->render(
+        template => 'offtopic_link',
+        link     => $link,
+        title    => 'Is this link off-topic?',
+        layout   => 'default',
+    );
+};
+
+get '/keywords' => sub {
+    my $self = shift;
+    $self->render(
+        template => 'keywords',
+        keywords => scalar $ts->twitter_keywords,
+        title    => 'Keywords being tracked',
+        layout   => 'default',
+    );
+};
+
+get '/style.css' => 'stylesheet';
 
 app->start;
 
