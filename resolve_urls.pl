@@ -11,6 +11,10 @@ use HTML::Encoding ();
 use HTML::Entities ();
 #use DBD::Pg qw(:pg_types);
 
+# For cleaning junk query params (utm_*) from URLs
+use URI;
+use URI::QueryParam;
+
 use TwitterStream;
 
 # Lots of UTF8 in Twitter data...
@@ -297,6 +301,7 @@ sub verify_url {
 
     my $url = $res->request->uri;
     $url->path('') if $url->path eq '/'; # Strip trailing slash for root path
+    $url = clean_url($url); # Get rid of utm_ junk query parameters
 
     my $title = $content;
     my $encoding_from = "";
@@ -405,6 +410,13 @@ EOM
     print "Verified OK: ", $verified_url_id, "\n";
 
     return 1; # OK
+}
+
+sub clean_url {
+    my ($uri) = @_;
+    my @blacklisted_query_keys = qw(utm_source utm_medium utm_campaign utm_term);
+    $uri->query_param_delete($_) for @blacklisted_query_keys;
+    return $uri->canonical;
 }
 
 1;
