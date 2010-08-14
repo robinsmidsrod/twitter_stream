@@ -17,6 +17,8 @@ use URI::QueryParam;
 
 use TwitterStream;
 
+$0 = 'ts_resolver';
+
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
 
@@ -300,8 +302,8 @@ sub verify_url {
     $content_type = (split(/;/, $content_type, 2))[0];
 
     my $url = $res->request->uri;
-    $url->path('') if $url->path eq '/'; # Strip trailing slash for root path
     $url = clean_url($url); # Get rid of utm_ junk query parameters
+    $url->path('') if $url->path eq '/'; # Strip trailing slash for root path
 
     my $title = $content;
     my $encoding_from = "";

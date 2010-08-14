@@ -8,6 +8,8 @@ use utf8;
 use lib 'lib';
 use TwitterStream;
 
+$0 = 'ts_webapp';
+
 my $ts = TwitterStream->new();
 
 # Set the Mojolicious session secret

@@ -11,6 +11,8 @@ use URI::Find::UTF8;
 
 use TwitterStream;
 
+$0 = 'ts_stream';
+
 # Lots of UTF8 in Twitter data...
 binmode STDOUT, ":utf8";
 
