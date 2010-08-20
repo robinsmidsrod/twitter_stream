@@ -9,6 +9,7 @@ use LWP::UserAgent ();
 use Encode ();
 use HTML::Encoding ();
 use HTML::Entities ();
+use Scalar::Util qw(blessed);
 #use DBD::Pg qw(:pg_types);
 
 # For cleaning junk query params (utm_*) from URLs
@@ -301,9 +302,8 @@ sub verify_url {
     my $content_type = $res->header('Content-Type');
     $content_type = (split(/;/, $content_type, 2))[0];
 
-    my $url = $res->request->uri;
-    $url = clean_url($url); # Get rid of utm_ junk query parameters
-    $url->path('') if $url->path eq '/'; # Strip trailing slash for root path
+    # Get rid of utm_ junk query parameters and some other stuff
+    my $url = clean_url($res->request->uri);
 
     my $title = $content;
     my $encoding_from = "";
@@ -415,10 +415,21 @@ EOM
 }
 
 sub clean_url {
-    my ($uri) = @_;
+    my ($url) = @_;
+
+    # Do some verification of input, ensure class knows how to manipulate query parameters
+    return $url unless blessed($url);
+    return $url unless $url->isa('URI');
+    return $url->canonical unless $url->can('query_param_delete');
+
+    # Get rid of unwanted Google Analytics tags
     my @blacklisted_query_keys = qw(utm_source utm_medium utm_campaign utm_term);
-    $uri->query_param_delete($_) for @blacklisted_query_keys;
-    return $uri->canonical;
+    $url->query_param_delete($_) for @blacklisted_query_keys;
+
+    # Strip trailing slash for root path
+    $url->path('') if $url->path eq '/';
+
+    return $url->canonical;
 }
 
 1;
