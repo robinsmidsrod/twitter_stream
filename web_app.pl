@@ -42,6 +42,14 @@ get '/' => sub {
         age       => $age->in_units("${precision}s"),
     });
 
+    my $prev_page_url = $offset > 0
+                      ? '/?limit=' . $limit . '&offset=' . ( $offset - $limit )
+                      : '';
+
+    my $next_page_url = scalar @$links == $limit
+                      ? '/?limit=' . $limit . '&offset=' . ( $offset + $limit )
+                      : '';
+
     $self->render(
         template => 'linklist',
         links    => $links,
@@ -50,6 +58,8 @@ get '/' => sub {
         precision => $precision,
         today     => today(),
         age       => $age,
+        prev_page_url => $prev_page_url,
+        next_page_url => $next_page_url,
         layout   => 'default',
     );
 };
@@ -75,6 +85,14 @@ get '/(.precision)' => [ precision => qr/day|week|month|year/ ] => sub {
         age       => $age->in_units("${precision}s"),
     });
 
+    my $prev_page_url = $offset > 0
+                      ? '/' . $precision . '?limit=' . $limit . '&offset=' . ( $offset - $limit )
+                      : '';
+
+    my $next_page_url = scalar @$links == $limit
+                      ? '/' . $precision . '?limit=' . $limit . '&offset=' . ( $offset + $limit )
+                      : '';
+
     $self->render(
         template => 'linklist',
         links    => $links,
@@ -83,6 +101,8 @@ get '/(.precision)' => [ precision => qr/day|week|month|year/ ] => sub {
         precision => $precision,
         today     => today(),
         age       => $age,
+        prev_page_url => $prev_page_url,
+        next_page_url => $next_page_url,
         layout   => 'default',
     );
 };
@@ -108,6 +128,14 @@ get '/(.precision)/(.date)' => [ precision => qr/day|week|month|year/ ] => sub {
         age       => $age->in_units("${precision}s"),
     });
 
+    my $prev_page_url = $offset > 0
+                      ? '/' . $precision . '/' . $self->param('date') . '?limit=' . $limit . '&offset=' . ( $offset - $limit )
+                      : '';
+
+    my $next_page_url = scalar @$links == $limit
+                      ? '/' . $precision . '/' . $self->param('date') . '?limit=' . $limit . '&offset=' . ( $offset + $limit )
+                      : '';
+
     $self->render(
         template => 'linklist',
         links    => $links,
@@ -116,6 +144,8 @@ get '/(.precision)/(.date)' => [ precision => qr/day|week|month|year/ ] => sub {
         precision => $precision,
         today     => today(),
         age       => $age,
+        prev_page_url => $prev_page_url,
+        next_page_url => $next_page_url,
         layout   => 'default',
     );
 };
@@ -143,6 +173,14 @@ get '/(.precision)/(.date)/(*keyword)' => [ precision => qr/day|week|month|year/
         keyword   => $keyword,
     });
 
+    my $prev_page_url = $offset > 0
+                      ? '/' . $precision . '/' . $self->param('date') . '/' . $keyword . '?limit=' . $limit . '&offset=' . ( $offset - $limit )
+                      : '';
+
+    my $next_page_url = scalar @$links == $limit
+                      ? '/' . $precision . '/' . $self->param('date') . '/' . $keyword . '?limit=' . $limit . '&offset=' . ( $offset + $limit )
+                      : '';
+
     $self->render(
         template => 'linklist',
         links    => $links,
@@ -151,6 +189,8 @@ get '/(.precision)/(.date)/(*keyword)' => [ precision => qr/day|week|month|year/
         precision => $precision,
         today     => today(),
         age       => $age,
+        prev_page_url => $prev_page_url,
+        next_page_url => $next_page_url,
         layout   => 'default',
     );
 };
@@ -166,11 +206,20 @@ get '/offtopic' => sub {
         offset    => $offset,
     });
 
+    my $prev_page_url = $offset > 0
+                      ? '/offtopic?limit=' . $limit . '&offset=' . ( $offset - $limit )
+                      : '';
+    my $next_page_url = scalar @$links == $limit
+                      ? '/offtopic?limit=' . $limit . '&offset=' . ( $offset + $limit )
+                      : '';
+
     $self->render(
         template => 'linklist',
         links    => $links,
         keywords => scalar $ts->twitter_keywords,
         title    => 'Most recent off-topic links',
+        prev_page_url => $prev_page_url,
+        next_page_url => $next_page_url,
         layout   => 'default',
     );
 };
@@ -353,6 +402,9 @@ The link is currently tagged as <strong><%= $link->{'is_off_topic'} ? 'off-topic
 % if ( scalar @$links == 0 ) {
 <span class="zero_records">No links found. Please try another time period.</span>
 % }
+% if ( $prev_page_url ) {
+<div style="text-align: center;"><a href="<%= $prev_page_url %>">previous page</a></div>
+% }
 <ul class="links">
 % foreach my $link ( @$links ) {
 <li class="link">
@@ -361,6 +413,9 @@ The link is currently tagged as <strong><%= $link->{'is_off_topic'} ? 'off-topic
 % }
 </ul>
 </div>
+% if ( $next_page_url ) {
+<div style="text-align: center;"><a href="<%= $next_page_url %>">next page</a></div>
+% }
 <%== include 'keywords' %>
 
 @@ link.html.ep
