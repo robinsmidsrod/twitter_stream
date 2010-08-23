@@ -312,7 +312,7 @@ SELECT
 FROM mention_$precision m JOIN verified_url vu ON m.verified_url_id = vu.id
 WHERE m.mention_at = DATE_TRUNC('$precision',(CURRENT_TIMESTAMP - INTERVAL '$age $precision'))
  AND vu.is_off_topic = FALSE
-ORDER BY m.mention_count DESC, vu.first_mention_at DESC
+ORDER BY m.mention_count DESC --, vu.first_mention_at DESC -- disabled because it is super-slow
 LIMIT ?
 OFFSET ?
 EOM
@@ -332,13 +332,15 @@ FROM mention_${precision}_keyword m JOIN verified_url vu ON m.verified_url_id = 
 WHERE m.mention_at = DATE_TRUNC('$precision',(CURRENT_TIMESTAMP - INTERVAL '$age $precision'))
  AND vu.is_off_topic = FALSE
  AND m.keyword_id = (SELECT id FROM keyword k WHERE k.keyword = ?)
-ORDER BY m.mention_count DESC, vu.first_mention_at DESC
+ORDER BY m.mention_count DESC --, vu.first_mention_at DESC -- disabled because it is super-slow
 LIMIT ?
 OFFSET ?
 EOM
     }
 
-    my $sth = $self->dbh->prepare($sql);
+    # LIMIT/OFFSET takes forever without this because preparing without LIMIT
+    # causes postgresql planner to choose another (worse) plan.
+    my $sth = $self->dbh->prepare($sql, { pg_server_prepare => 0 });
     if ( $self->dbh->err ) {
         warn("Database error occured: " . $self->dbh->errstr);
         $self->dbh->rollback();

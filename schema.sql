@@ -543,6 +543,13 @@ CREATE INDEX verified_url_fetched_at ON verified_url USING btree (verified_at NU
 
 
 --
+-- Name: verified_url_idx_is_off_topic; Type: INDEX; Schema: public; Owner: -; Tablespace: 
+--
+
+CREATE INDEX verified_url_idx_is_off_topic ON verified_url USING btree (is_off_topic);
+
+
+--
 -- Name: mention_day_fk_verified_url_id; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
