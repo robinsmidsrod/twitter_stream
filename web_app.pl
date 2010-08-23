@@ -387,9 +387,13 @@ The link is currently tagged as <strong><%= $link->{'is_off_topic'} ? 'off-topic
 <tbody>
 % foreach my $precision_type ( qw(day week month year) ) {
 <tr>
-<td><a href="/<%= $precision_type %>/"><%= $precision_type . " -1" %></a></td>
-<td class="<%= $precision_type eq stash->{'precision'} ? 'highlight' : '' %>"><a href="/<%= $precision_type %>/"><%= $precision_type %></a></td>
-<td><a href="/<%= $precision_type %>/"><%= $precision_type . " +1" %></a></td>
+% my $unit = $precision_type . "s";
+% my $diq = DateTime->today( time_zone => 'UTC' ) - $age;
+% my $prev = $diq - DateTime::Duration->new( $unit => 1 );
+% my $next = $diq + DateTime::Duration->new( $unit => 1 );
+<td><a href="/<%= $precision_type %>/<%= $prev->strftime('%F') %><%= "/" . stash->{'keyword'} if stash->{'keyword'} %>">-1</a></td>
+<td class="<%= $precision_type eq stash->{'precision'} ? 'highlight' : '' %>"><a href="/<%= $precision_type %>/<%= $diq->strftime('%F') %><%= "/" . stash->{'keyword'} if stash->{'keyword'} %>"><%= $precision_type %></a></td>
+<td><a href="/<%= $precision_type %>/<%= $next->strftime('%F') %><%= "/" . stash->{'keyword'} if stash->{'keyword'} %>">+1</a></td>
 </tr>
 % }
 </tbody>
