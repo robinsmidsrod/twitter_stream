@@ -388,7 +388,7 @@ The link is currently tagged as <strong><%= $link->{'is_off_topic'} ? 'off-topic
 % foreach my $precision_type ( qw(day week month year) ) {
 <tr>
 % my $unit = $precision_type . "s";
-% my $diq = DateTime->today( time_zone => 'UTC' ) - $age;
+% my $diq = DateTime->today( time_zone => 'UTC' ) - stash->{'age'};
 % my $prev = $diq - DateTime::Duration->new( $unit => 1 );
 % my $next = $diq + DateTime::Duration->new( $unit => 1 );
 <td><a href="/<%= $precision_type %>/<%= $prev->strftime('%F') %><%= "/" . stash->{'keyword'} if stash->{'keyword'} %>">-1</a></td>
