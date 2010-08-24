@@ -529,6 +529,27 @@ CREATE INDEX mention_year_keyword_idx_verified_url_id ON mention_year_keyword US
 
 
 --
+-- Name: url_idx_is_verified; Type: INDEX; Schema: public; Owner: -; Tablespace: 
+--
+
+CREATE INDEX url_idx_is_verified ON url USING btree (is_verified);
+
+
+--
+-- Name: url_idx_verified_at; Type: INDEX; Schema: public; Owner: -; Tablespace: 
+--
+
+CREATE INDEX url_idx_verified_at ON url USING btree (verified_at);
+
+
+--
+-- Name: url_idx_verify_failed; Type: INDEX; Schema: public; Owner: -; Tablespace: 
+--
+
+CREATE INDEX url_idx_verify_failed ON url USING btree (verify_failed);
+
+
+--
 -- Name: url_verified_url_id; Type: INDEX; Schema: public; Owner: -; Tablespace: 
 --
 
