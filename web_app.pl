@@ -5,7 +5,9 @@ use DateTime ();
 use Encode ();
 use utf8;
 
-use lib 'lib';
+use FindBin;
+use lib "$FindBin::Bin/lib";
+
 use TwitterStream;
 
 $0 = 'ts_webapp';
