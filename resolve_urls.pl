@@ -312,7 +312,7 @@ sub verify_url {
         $encoding_from = "header";
         {
             no warnings 'utf8';
-            $title = Encode::decode($res->content_charset, $title);
+            $title = eval { Encode::decode($res->content_charset, $title); };
         }
     }
     else {
@@ -323,7 +323,7 @@ sub verify_url {
             $encoding_from = "content";
             {
                 no warnings 'utf8';
-                $title = Encode::decode($encoding, $title);
+                $title = eval { Encode::decode($encoding, $title); };
             }
         }
     }
