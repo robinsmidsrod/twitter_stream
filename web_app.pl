@@ -352,6 +352,10 @@ sub calc_offset {
 
 __DATA__
 
+@@ robots.txt
+User-agent: *
+Disallow: /offtopic/
+
 @@ keywords.html.ep
 % if ( exists stash->{'keywords'} ) {
 <div class="keywords">
@@ -434,17 +438,17 @@ N/A
 % }
 </div>
 <div class="mention_title">
-<a href="<%= $link->{'url'} %>"><%= $link->{'title'} || 'Unknown title (something of type ' . $link->{'content_type'} . ')' %></a>
+<a href="<%= $link->{'url'} %>" rel="nofollow"><%= $link->{'title'} || 'Unknown title (something of type ' . $link->{'content_type'} . ')' %></a>
 </div>
 <div class="mention_who">
-First mentioned by <a href="<%= 'http://twitter.com/' . $link->{'first_mention_by_user'} . '/status/' . $link->{'first_mention_id'} %>"><%= $link->{'first_mention_by_name'} %></a> at <%= $link->{'first_mention_at'} %>
+First mentioned by <a href="<%= 'http://twitter.com/' . $link->{'first_mention_by_user'} . '/status/' . $link->{'first_mention_id'} %>" rel="nofollow"><%= $link->{'first_mention_by_name'} %></a> at <%= $link->{'first_mention_at'} %>
 </div>
 <div class="mention_url">
-<a href="<%= $link->{'url'} %>"><%= $link->{'url'} %></a>
+<a href="<%= $link->{'url'} %>" rel="nofollow"><%= $link->{'url'} %></a>
 </div>
 % if ( not exists $link->{'is_off_topic'} ) {
 <div class="offtopic">
-<a href="/offtopic/<%= $link->{'id'} %>">Off-topic?</a>
+<a href="/offtopic/<%= $link->{'id'} %>" rel="nofollow">Off-topic?</a>
 </div>
 % }
 
